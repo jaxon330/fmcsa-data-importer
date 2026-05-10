@@ -1,0 +1,29 @@
+{
+  "name": "authority-history-importer",
+  "version": "1.0.0",
+  "description": "Standalone FMCSA authority history TXT importer",
+  "main": "dist/scripts/importAuthorityHistory.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "db:migrate": "psql $DATABASE_URL -f migrations/001_create_fmcsa_authority_history.sql",
+    "import:authority-history": "ts-node scripts/importAuthorityHistory.ts",
+    "test": "jest --runInBand"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}
