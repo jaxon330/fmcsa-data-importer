@@ -1,0 +1,163 @@
+# FMCSA Data Importer
+
+Standalone streaming importer for FMCSA source datasets.
+
+It imports full-history or daily-difference CSV/TXT files into Postgres source tables used by the company-check service.
+
+## Supported Datasets
+
+```bash
+npm run import:fmcsa -- carrier /path/to/carrier_all_with_history.csv
+npm run import:fmcsa -- active-insurance /path/to/active_pending_insurance_all_with_history.csv
+npm run import:fmcsa -- insurance-history /path/to/insurance_history_all_with_history.csv
+npm run import:fmcsa -- revocation /path/to/revocation_all_with_history.csv
+npm run import:fmcsa -- authority-history /path/to/authority_history_all_with_history.csv
+```
+
+Inputs can be:
+
+- local file path
+- HTTP/HTTPS URL
+- S3 URL, for example `s3://dispatch-ai-fmcsa/carrier_all_with_history.csv`
+
+The importer streams input and does not load the full file into memory.
+
+## Environment
+
+```dotenv
+DATABASE_URL=postgresql://jakhongirmasaidov@localhost:5432/dispatch_local
+FMCSA_IMPORT_BATCH_SIZE=1000
+AWS_REGION=us-east-1
+```
+
+`FMCSA_IMPORT_BATCH_SIZE` defaults to `1000`.
+
+## Commands
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run migrations:
+
+```bash
+npm run db:migrate
+```
+
+Run tests:
+
+```bash
+npm test
+```
+
+Build TypeScript:
+
+```bash
+npm run build
+```
+
+## Tables
+
+The importer writes to:
+
+- `fmcsa_carriers`
+- `fmcsa_active_pending_insurance`
+- `fmcsa_insurance_history`
+- `fmcsa_revocations`
+- `fmcsa_authority_history`
+
+Every table includes:
+
+- selected normalized columns for lookup/querying
+- `raw_record JSONB`
+- `source_record_hash TEXT NOT NULL`
+- `imported_at`
+- `updated_at`
+
+## Uniqueness Strategy
+
+`source_record_hash` is the true uniqueness key.
+
+FMCSA rows are not guaranteed to be unique by our selected business columns. Two source rows can have the same MC/DOT, dates, policy, or authority fields while differing in a source column we do not store as a normal column.
+
+The importer computes:
+
+```text
+source_record_hash = sha256(JSON.stringify(normalizedRawRecord))
+```
+
+Where `normalizedRawRecord`:
+
+- includes all source columns from the CSV row
+- trims strings
+- converts empty strings to `null`
+- uses stable key ordering before hashing
+
+The DB uses:
+
+```sql
+UNIQUE(source_record_hash)
+```
+
+MC/DOT columns are lookup keys, not uniqueness keys. Indexes are kept on `dot_number` and `docket_number`.
+
+## Initial Import Notes
+
+These timings were observed on the local Postgres import of full-history datasets.
+
+```text
+active-insurance
+source rows:        467,983
+final DB rows:      467,932
+runtime:            15.47s
+
+revocation
+source rows:        ~1,529,083
+final DB rows:      1,511,969
+runtime:            interrupted earlier, but completed enough to load table
+
+carrier
+source rows:        1,860,604
+final DB rows:      1,860,603
+runtime:            140.06s
+
+insurance-history
+source rows:        7,427,776
+final DB rows:      7,346,321
+runtime:            1268.61s, about 21.1 minutes
+
+authority-history
+source rows:        4,941,925
+final DB rows:      4,931,415
+runtime:            834.14s, about 13.9 minutes
+```
+
+Long-running commands:
+
+```bash
+npm run import:fmcsa -- carrier /Users/jakhongirmasaidov/Projects/IT_projects/Dispatch_AI/Data_Transportation/carrier_all_with_history.csv
+npm run import:fmcsa -- insurance-history /Users/jakhongirmasaidov/Projects/IT_projects/Dispatch_AI/Data_Transportation/insurance_history_all_with_history.csv
+npm run import:fmcsa -- authority-history /Users/jakhongirmasaidov/Projects/IT_projects/Dispatch_AI/Data_Transportation/authority_history_all_with_history.csv
+```
+
+They ran long because these were initial full-history imports. Each row was streamed, parsed, normalized, hashed with SHA-256, upserted into Postgres, and indexed. For large tables, disk writes and index maintenance dominate runtime.
+
+Remote DB imports may take similar or longer for the first full import, depending on DB CPU, disk I/O, network latency, and index performance.
+
+Future daily imports should be much faster because they should use daily-difference files instead of the full-history files. The same importer upserts by `source_record_hash`, so unchanged rows do not duplicate, and only new or changed source rows are inserted or updated.
+
+## Production Flow
+
+1. Download full-history FMCSA files to S3 once.
+2. Run this importer against each S3 file.
+3. Download daily-difference FMCSA files to S3.
+4. Run the same importer with the same dataset type.
+5. Let Postgres upsert by `source_record_hash`.
+
+Example:
+
+```bash
+npm run import:fmcsa -- carrier s3://dispatch-ai-fmcsa/carrier_all_with_history.csv
+```
