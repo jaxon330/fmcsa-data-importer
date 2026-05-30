@@ -15,6 +15,7 @@ export const DATASET_TYPES = [
 ] as const;
 
 export type DatasetType = (typeof DATASET_TYPES)[number];
+export type FmcsaSourceFormat = 'diff' | 'allHist';
 
 export interface DatasetConfig {
   datasetType: DatasetType;
@@ -35,6 +36,7 @@ export interface InsertBatch {
 
 export interface ImportStats {
   datasetType: DatasetType;
+  sourceFormat: FmcsaSourceFormat;
   inputSource: string;
   rowsRead: number;
   rowsInsertedOrUpdated: number;
@@ -49,6 +51,20 @@ export interface ImportOptions {
   pool: Pick<Pool, 'query'>;
   batchSize?: number;
   s3Client?: S3Client;
+  sourceFormat?: FmcsaSourceFormat;
+}
+
+export interface DryRunPreview {
+  dataset: DatasetType;
+  source: FmcsaSourceFormat;
+  columnCount: number;
+  preview: Array<Record<string, unknown>>;
+}
+
+interface SourceLayout {
+  sourceColumns: readonly string[];
+  columnIndexes: Readonly<Partial<Record<string, number>>>;
+  expectedColumnCount?: number;
 }
 
 const COMMON_COLUMNS = ['source_record_hash', 'raw_record', 'imported_at', 'updated_at'] as const;
@@ -61,6 +77,198 @@ const AUTHORITY_HISTORY_DERIVED_COLUMNS = [
   'is_reinstated',
   'is_discontinued_revocation',
 ] as const;
+
+const CARRIER_DIFF_COLUMNS = [
+  'docket_number',
+  'dot_number',
+  'mx_type',
+  'rfc_number',
+  'common_stat',
+  'contract_stat',
+  'broker_stat',
+  'common_app_pend',
+  'contract_app_pend',
+  'broker_app_pend',
+  'common_rev_pend',
+  'contract_rev_pend',
+  'broker_rev_pend',
+  'property_chk',
+  'passenger_chk',
+  'hhg_chk',
+  'private_auth_chk',
+  'enterprise_chk',
+  'min_cov_amount',
+  'cargo_req',
+  'bond_req',
+  'bipd_file',
+  'cargo_file',
+  'bond_file',
+  'undeliverable_mail',
+  'dba_name',
+  'legal_name',
+  'bus_street_po',
+  'bus_colonia',
+  'bus_city',
+  'bus_state_code',
+  'bus_ctry_code',
+  'bus_zip_code',
+  'bus_telno',
+  'bus_fax',
+  'mail_street_po',
+  'mail_colonia',
+  'mail_city',
+  'mail_state_code',
+  'mail_ctry_code',
+  'mail_zip_code',
+  'mail_telno',
+  'mail_fax',
+] as const;
+
+const ACTIVE_INSURANCE_DIFF_COLUMNS = [
+  'docket_number',
+  'dot_number',
+  'ins_form_code',
+  'insurance_type_description',
+  'insurance_company_name',
+  'policy_no',
+  'posted_date',
+  'underl_lim_amount',
+  'max_cov_amount',
+  'effective_date',
+  'cancel_effective_date',
+] as const;
+
+const INSURANCE_HISTORY_DIFF_COLUMNS = [
+  'docket_number',
+  'dot_number',
+  'ins_form_code',
+  'cancellation_method',
+  'ins_cancl_form',
+  'ins_type_ind',
+  'insurance_type_description',
+  'policy_no',
+  'min_cov_amount',
+  'ins_class_code',
+  'effective_date',
+  'underl_lim_amount',
+  'max_cov_amount',
+  'cancel_effective_date',
+  'specific_cancellation_method',
+  'inser_branch',
+  'insurance_company_name',
+] as const;
+
+const REVOCATION_DIFF_COLUMNS = [
+  'docket_number',
+  'dot_number',
+  'authority_type',
+  'serve_date',
+  'revocation_type',
+  'effective_date',
+] as const;
+
+const AUTHORITY_HISTORY_DIFF_COLUMNS = [
+  'docket_number',
+  'dot_number',
+  'sub_number',
+  'authority_type',
+  'original_action',
+  'original_action_date',
+  'final_action',
+  'final_decision_date',
+  'final_served_date',
+] as const;
+
+const DIFF_SOURCE_LAYOUTS: Record<DatasetType, SourceLayout> = {
+  carrier: {
+    sourceColumns: CARRIER_DIFF_COLUMNS,
+    expectedColumnCount: 43,
+    columnIndexes: {
+      docket_number: 0,
+      dot_number: 1,
+      common_stat: 4,
+      contract_stat: 5,
+      broker_stat: 6,
+      broker_app_pend: 9,
+      broker_rev_pend: 12,
+      bond_req: 20,
+      bipd_file: 21,
+      cargo_file: 22,
+      bond_file: 23,
+      dba_name: 25,
+      legal_name: 26,
+      bus_street_po: 27,
+      bus_city: 29,
+      bus_state_code: 30,
+      bus_ctry_code: 31,
+      bus_zip_code: 32,
+      bus_telno: 33,
+      mail_street_po: 35,
+      mail_city: 37,
+      mail_state_code: 38,
+      mail_ctry_code: 39,
+      mail_zip_code: 40,
+    },
+  },
+  'active-insurance': {
+    sourceColumns: ACTIVE_INSURANCE_DIFF_COLUMNS,
+    expectedColumnCount: 11,
+    columnIndexes: {
+      docket_number: 0,
+      dot_number: 1,
+      ins_form_code: 2,
+      insurance_type_description: 3,
+      insurance_company_name: 4,
+      policy_no: 5,
+      posted_date: 6,
+      effective_date: 9,
+      cancel_effective_date: 10,
+    },
+  },
+  'insurance-history': {
+    sourceColumns: INSURANCE_HISTORY_DIFF_COLUMNS,
+    expectedColumnCount: 17,
+    columnIndexes: {
+      docket_number: 0,
+      dot_number: 1,
+      ins_form_code: 2,
+      cancellation_method: 3,
+      insurance_type_description: 6,
+      policy_no: 7,
+      effective_date: 10,
+      cancel_effective_date: 13,
+      specific_cancellation_method: 14,
+      insurance_company_name: 16,
+    },
+  },
+  revocation: {
+    sourceColumns: REVOCATION_DIFF_COLUMNS,
+    expectedColumnCount: 6,
+    columnIndexes: {
+      docket_number: 0,
+      dot_number: 1,
+      authority_type: 2,
+      serve_date: 3,
+      revocation_type: 4,
+      effective_date: 5,
+    },
+  },
+  'authority-history': {
+    sourceColumns: AUTHORITY_HISTORY_DIFF_COLUMNS,
+    expectedColumnCount: 9,
+    columnIndexes: {
+      docket_number: 0,
+      dot_number: 1,
+      sub_number: 2,
+      authority_type: 3,
+      original_action: 4,
+      original_action_date: 5,
+      final_action: 6,
+      final_decision_date: 7,
+      final_served_date: 8,
+    },
+  },
+};
 
 export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
   carrier: {
@@ -162,7 +370,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'cancel_effective_date',
     ],
     sourceAliases: {
-      insurance_type_description: ['insurance_type_description', 'ins_type_desc'],
+      insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'mod_col_1'],
       insurance_company_name: ['insurance_company_name', 'name_company'],
       posted_date: ['posted_date', 'trans_date'],
       cancel_effective_date: ['cancel_effective_date', 'cancl_effective_date'],
@@ -199,8 +407,8 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'insurance_company_name',
     ],
     sourceAliases: {
-      cancellation_method: ['cancellation_method', 'cancl_method_gen'],
-      insurance_type_description: ['insurance_type_description', 'ins_type_desc'],
+      cancellation_method: ['cancellation_method', 'cancl_method_gen', 'mod_col_1'],
+      insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'mod_col_3'],
       cancel_effective_date: ['cancel_effective_date', 'cancl_effective_date'],
       specific_cancellation_method: ['specific_cancellation_method', 'cancl_method'],
       insurance_company_name: ['insurance_company_name', 'name_company'],
@@ -267,7 +475,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'final_served_date',
     ],
     sourceAliases: {
-      authority_type: ['authority_type', 'op_auth_type'],
+      authority_type: ['authority_type', 'op_auth_type', 'mod_col_1'],
       original_action: ['original_action', 'original_action_desc'],
       original_action_date: ['original_action_date', 'orig_served_date'],
       final_action: ['final_action', 'disp_action_desc'],
@@ -300,6 +508,14 @@ export function parseDatasetType(value: string | undefined): DatasetType {
   }
 
   throw new Error(`Unsupported datasetType "${value ?? ''}". Supported values: ${DATASET_TYPES.join(', ')}`);
+}
+
+export function parseSourceFormat(value: string | undefined): FmcsaSourceFormat {
+  if (value === 'diff' || value === 'allHist') {
+    return value;
+  }
+
+  throw new Error(`Unsupported source "${value ?? ''}". Supported source values: diff, allHist`);
 }
 
 export function getBatchSize(value = process.env.FMCSA_IMPORT_BATCH_SIZE): number {
@@ -465,9 +681,12 @@ export function mapDatasetRow(
   datasetType: DatasetType,
   fields: string[],
   headers?: string[],
+  sourceFormat: FmcsaSourceFormat = 'allHist',
 ): Record<string, unknown> | null {
   const config = DATASET_CONFIGS[datasetType];
-  const rawRecord = (headers ?? config.sourceColumns).reduce<Record<string, string | null>>((record, column, index) => {
+  const layout = sourceFormat === 'diff' ? DIFF_SOURCE_LAYOUTS[datasetType] : null;
+  const rawColumns = headers ?? layout?.sourceColumns ?? config.sourceColumns;
+  const rawRecord = rawColumns.reduce<Record<string, string | null>>((record, column, index) => {
     record[normalizeHeaderName(column)] = normalizeNullable(fields[index]);
     return record;
   }, {});
@@ -476,7 +695,7 @@ export function mapDatasetRow(
   const row: Record<string, unknown> = {};
 
   for (const column of config.sourceColumns) {
-    const sourceValue = getSourceValue(config, column, fields, headerIndex);
+    const sourceValue = getSourceValue(config, column, fields, headerIndex, layout);
 
     if (column === 'dot_number') {
       row[column] = normalizeDotNumber(sourceValue);
@@ -587,10 +806,12 @@ export async function createInputStream(
 
 export async function importFmcsaDataset(options: ImportOptions): Promise<ImportStats> {
   const batchSize = options.batchSize ?? getBatchSize();
+  const sourceFormat = options.sourceFormat ?? 'allHist';
   const stream = await createInputStream(options.inputSource, { s3Client: options.s3Client });
   const startedAt = process.hrtime.bigint();
   const stats: ImportStats = {
     datasetType: options.datasetType,
+    sourceFormat,
     inputSource: options.inputSource,
     rowsRead: 0,
     rowsInsertedOrUpdated: 0,
@@ -616,17 +837,20 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
   };
 
   for await (const fields of parseCsvRecords(stream)) {
-    try {
-      if (firstRecord) {
-        firstRecord = false;
-        if (isHeaderRow(options.datasetType, fields)) {
-          headers = fields.map((field) => field.trim());
-          continue;
-        }
+    if (firstRecord) {
+      firstRecord = false;
+      if (sourceFormat === 'allHist' && isHeaderRow(options.datasetType, fields)) {
+        headers = fields.map((field) => field.trim());
+        continue;
       }
+      validateColumnCount(options.datasetType, sourceFormat, fields.length);
+    } else if (sourceFormat === 'diff') {
+      validateColumnCount(options.datasetType, sourceFormat, fields.length);
+    }
 
+    try {
       stats.rowsRead += 1;
-      const row = mapDatasetRow(options.datasetType, fields, headers);
+      const row = mapDatasetRow(options.datasetType, fields, headers, sourceFormat);
       if (!row) {
         stats.rowsFailed += 1;
         continue;
@@ -645,6 +869,51 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
   stats.durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
 
   return stats;
+}
+
+export async function previewFmcsaDataset(options: {
+  datasetType: DatasetType;
+  inputSource: string;
+  sourceFormat: FmcsaSourceFormat;
+  limit?: number;
+  s3Client?: S3Client;
+}): Promise<DryRunPreview> {
+  const stream = await createInputStream(options.inputSource, { s3Client: options.s3Client });
+  const preview: Array<Record<string, unknown>> = [];
+  let headers: string[] | undefined;
+  let firstRecord = true;
+  let columnCount = 0;
+  const limit = options.limit ?? 3;
+
+  for await (const fields of parseCsvRecords(stream)) {
+    if (firstRecord) {
+      firstRecord = false;
+      columnCount = fields.length;
+      if (options.sourceFormat === 'allHist' && isHeaderRow(options.datasetType, fields)) {
+        headers = fields.map((field) => field.trim());
+        continue;
+      }
+      validateColumnCount(options.datasetType, options.sourceFormat, fields.length);
+    } else if (options.sourceFormat === 'diff') {
+      validateColumnCount(options.datasetType, options.sourceFormat, fields.length);
+    }
+
+    const row = mapDatasetRow(options.datasetType, fields, headers, options.sourceFormat);
+    if (row) {
+      preview.push(stripImportMetadata(row));
+    }
+
+    if (preview.length >= limit) {
+      break;
+    }
+  }
+
+  return {
+    dataset: options.datasetType,
+    source: options.sourceFormat,
+    columnCount,
+    preview,
+  };
 }
 
 function deriveAuthorityHistoryFlags(row: Record<string, unknown>): Record<string, unknown> {
@@ -694,8 +963,14 @@ function getSourceValue(
   column: string,
   fields: string[],
   headerIndex: Map<string, number> | null,
+  layout: SourceLayout | null,
 ): string | undefined {
   if (!headerIndex) {
+    if (layout) {
+      const index = layout.columnIndexes[column];
+      return index === undefined ? undefined : fields[index];
+    }
+
     return fields[config.sourceColumns.indexOf(column)];
   }
 
@@ -716,6 +991,34 @@ function isHeaderRow(datasetType: DatasetType, fields: string[]): boolean {
   return config.requiredColumns.every((column) =>
     getColumnAliases(config, column).some((alias) => headerIndex.has(normalizeHeaderName(alias))),
   );
+}
+
+function validateColumnCount(
+  datasetType: DatasetType,
+  sourceFormat: FmcsaSourceFormat,
+  columnCount: number,
+): void {
+  if (sourceFormat !== 'diff') {
+    return;
+  }
+
+  const expectedColumnCount = DIFF_SOURCE_LAYOUTS[datasetType].expectedColumnCount;
+  if (expectedColumnCount === undefined || columnCount === expectedColumnCount) {
+    return;
+  }
+
+  throw new Error(
+    `Unexpected ${datasetType} ${sourceFormat} column count: got ${columnCount}, expected ${expectedColumnCount}. Run with --dry-run to preview the file before importing.`,
+  );
+}
+
+function stripImportMetadata(row: Record<string, unknown>): Record<string, unknown> {
+  const { imported_at, updated_at, source_record_hash, raw_record, ...previewRow } = row;
+  void imported_at;
+  void updated_at;
+  void source_record_hash;
+  void raw_record;
+  return previewRow;
 }
 
 function dedupeRowsByConflictKey(

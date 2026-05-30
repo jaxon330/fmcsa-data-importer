@@ -7,11 +7,11 @@ It imports full-history or daily-difference CSV/TXT files into Postgres source t
 ## Supported Datasets
 
 ```bash
-npm run import:fmcsa -- carrier /path/to/carrier_all_with_history.csv
-npm run import:fmcsa -- active-insurance /path/to/active_pending_insurance_all_with_history.csv
-npm run import:fmcsa -- insurance-history /path/to/insurance_history_all_with_history.csv
-npm run import:fmcsa -- revocation /path/to/revocation_all_with_history.csv
-npm run import:fmcsa -- authority-history /path/to/authority_history_all_with_history.csv
+npm run import:fmcsa -- carrier /path/to/carrier_all_with_history.csv --source allHist
+npm run import:fmcsa -- active-insurance /path/to/active_pending_insurance_all_with_history.csv --source allHist
+npm run import:fmcsa -- insurance-history /path/to/insurance_history_all_with_history.csv --source allHist
+npm run import:fmcsa -- revocation /path/to/revocation_all_with_history.csv --source allHist
+npm run import:fmcsa -- authority-history /path/to/authority_history_all_with_history.csv --source allHist
 ```
 
 Inputs can be:
@@ -56,6 +56,36 @@ Build TypeScript:
 
 ```bash
 npm run build
+```
+
+## Download FMCSA Source Files
+
+Daily diff:
+
+```bash
+npm run download:fmcsa -- --download diff
+```
+
+All with history:
+
+```bash
+npm run download:fmcsa -- --download allHist
+```
+
+Force overwrite existing dated files:
+
+```bash
+npm run download:fmcsa -- --download diff --force
+```
+
+All-history CSV exports use the Socrata v3 export API. Set `FMCSA_SOCRATA_APP_TOKEN`
+or `SOCRATA_APP_TOKEN` if DOT requires request identification for CSV export.
+
+Output:
+
+```text
+data/raw/diff/
+data/raw/allHist/
 ```
 
 ## Tables
@@ -147,6 +177,29 @@ They ran long because these were initial full-history imports. Each row was stre
 Remote DB imports may take similar or longer for the first full import, depending on DB CPU, disk I/O, network latency, and index performance.
 
 Future daily imports should be much faster because they should use daily-difference files instead of the full-history files. The same importer upserts by `source_record_hash`, so unchanged rows do not duplicate, and only new or changed source rows are inserted or updated.
+
+## Daily Diff Imports
+
+Daily diff files use explicit no-header positional layouts. Always pass `--source diff` and run
+`--dry-run` before importing new daily files.
+
+```bash
+npm run import:fmcsa -- carrier /path/to/carrier_2026_05_30.txt --source diff --dry-run
+npm run import:fmcsa -- active-insurance /path/to/actpendins_2026_05_30.txt --source diff --dry-run
+npm run import:fmcsa -- insurance-history /path/to/inshist_2026_05_30.txt --source diff --dry-run
+```
+
+Batch dry-run for broker-check v1 datasets:
+
+```bash
+npm run import:fmcsa:batch -- --source diff --datasets carrier,active-insurance,insurance-history --dir /path/to/data/raw/diff --dry-run
+```
+
+Batch import after preview confirms the mapped fields:
+
+```bash
+npm run import:fmcsa:batch -- --source diff --datasets carrier,active-insurance,insurance-history --dir /path/to/data/raw/diff
+```
 
 ## Production Flow
 
