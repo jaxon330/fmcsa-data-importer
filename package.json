@@ -6,7 +6,9 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "db:migrate": "set -e; if [ -f .env ]; then set -a; . ./.env; set +a; fi; for f in migrations/*.sql; do psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"; done",
+    "download:fmcsa": "ts-node src/scripts/downloadFmcsaFiles.ts",
     "import:fmcsa": "ts-node scripts/importFmcsa.ts",
+    "import:fmcsa:batch": "ts-node src/scripts/importFmcsaBatch.ts",
     "import:authority-history": "ts-node scripts/importAuthorityHistory.ts",
     "test": "jest --runInBand"
   },

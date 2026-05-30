@@ -13,8 +13,13 @@ import {
   parseCsvLine,
   parseCsvRecords,
   parseFmcsaDate,
+  previewFmcsaDataset,
   stableStringify,
 } from '../src/importers/fmcsaDataImporter';
+import {
+  parseDatasetList,
+  selectBatchFiles,
+} from '../src/scripts/importFmcsaBatch';
 
 async function collectRows(stream: Readable) {
   const rows: string[][] = [];
@@ -178,6 +183,120 @@ describe('FMCSA data importer', () => {
     });
   });
 
+  it('maps active-insurance diff dates from indexes 9 and 10', () => {
+    const row = mapDatasetRow('active-insurance', [
+      'MC1808911',
+      '04553798',
+      '91X',
+      'BIPD/Primary',
+      'NATIONAL FIRE & MARINE INSURANCE CO.',
+      '72TRS136977',
+      '05/11/2026',
+      '0',
+      '300',
+      '05/09/2027',
+      '06/13/2027',
+    ], undefined, 'diff');
+
+    expect(row).toMatchObject({
+      posted_date: '2026-05-11',
+      effective_date: '2027-05-09',
+      cancel_effective_date: '2027-06-13',
+    });
+  });
+
+  it('does not use active-insurance diff index 7 as a date', () => {
+    const row = mapDatasetRow('active-insurance', [
+      'MC1700301',
+      '04349172',
+      '91X',
+      'BIPD/Primary',
+      'UNITED FINANCIAL CASUALTY COMPANY',
+      'CA872530460',
+      '05/14/2026',
+      '07/04/2026',
+      '1500',
+      '07/16/2026',
+      '',
+    ], undefined, 'diff');
+
+    expect(row?.effective_date).toBe('2026-07-16');
+    expect(row?.effective_date).not.toBe('2026-07-04');
+    expect(row?.cancel_effective_date).toBeNull();
+  });
+
+  it('maps carrier diff legal name from the daily diff layout', async () => {
+    const filePath = path.join(os.tmpdir(), `carrier-diff-preview-${Date.now()}.txt`);
+    fs.writeFileSync(
+      filePath,
+      '"MC000675","00124159"," ","","I","I","N","N","N","N","N","N","N","N","Y","N","N","N","05000","N","N","01500","N","N","Y","","A&M TRANSIT LINES, LLC","170 EAST PROSPECT STREET","","ALLIANCE","OH","US","44601","3308233124","3308232100","","","","","","","",""\n',
+    );
+
+    try {
+      const preview = await previewFmcsaDataset({
+        datasetType: 'carrier',
+        inputSource: filePath,
+        sourceFormat: 'diff',
+      });
+
+      expect(preview.columnCount).toBe(43);
+      expect(preview.preview[0]).toMatchObject({
+        docket_number: 'MC000675',
+        dot_number: '00124159',
+        legal_name: 'A&M TRANSIT LINES, LLC',
+        broker_stat: 'N',
+        bond_file: 'N',
+      });
+    } finally {
+      fs.unlinkSync(filePath);
+    }
+  });
+
+  it('maps insurance-history diff policy, company, and date fields correctly', async () => {
+    const filePath = path.join(os.tmpdir(), `insurance-history-diff-preview-${Date.now()}.txt`);
+    fs.writeFileSync(
+      filePath,
+      '"MC191611","00280055","91","Cancelled","35"," ","BIPD","T-0201715-DM",1000,"","04/16/1987","","","04/16/1995","CANCEL","00","NATIONAL AMERICAN INSURANCE CO. OF NEW YORK"\n',
+    );
+
+    try {
+      const preview = await previewFmcsaDataset({
+        datasetType: 'insurance-history',
+        inputSource: filePath,
+        sourceFormat: 'diff',
+      });
+
+      expect(preview.columnCount).toBe(17);
+      expect(preview.preview[0]).toMatchObject({
+        policy_no: 'T-0201715-DM',
+        insurance_company_name: 'NATIONAL AMERICAN INSURANCE CO. OF NEW YORK',
+        effective_date: '1987-04-16',
+        cancel_effective_date: '1995-04-16',
+        cancellation_method: 'Cancelled',
+      });
+    } finally {
+      fs.unlinkSync(filePath);
+    }
+  });
+
+  it('fails fast on wrong diff column count before inserting', async () => {
+    const filePath = path.join(os.tmpdir(), `active-insurance-bad-diff-${Date.now()}.txt`);
+    fs.writeFileSync(filePath, 'MC1,123,91X,BIPD\n');
+    const pool = { query: jest.fn() };
+
+    try {
+      await expect(importFmcsaDataset({
+        datasetType: 'active-insurance',
+        inputSource: filePath,
+        sourceFormat: 'diff',
+        pool,
+      })).rejects.toThrow('Unexpected active-insurance diff column count');
+      expect(pool.query).not.toHaveBeenCalled();
+    } finally {
+      fs.unlinkSync(filePath);
+    }
+  });
+
   it('normalizes DOT and MC values', () => {
     expect(normalizeDotNumber('DOT 123456')).toBe('00123456');
     expect(normalizeDocketNumber(' mc1557892 ')).toBe('MC1557892');
@@ -322,6 +441,7 @@ describe('FMCSA data importer', () => {
       const stats = await importFmcsaDataset({
         datasetType: 'carrier',
         inputSource: filePath,
+        sourceFormat: 'allHist',
         pool,
         batchSize: 1,
       });
@@ -336,6 +456,44 @@ describe('FMCSA data importer', () => {
     } finally {
       fs.unlinkSync(filePath);
     }
+  });
+
+  it('batch file selection only processes requested datasets and uses latest dated files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmcsa-batch-'));
+    const files = [
+      'carrier_2026_05_29.txt',
+      'carrier_2026_05_30.txt',
+      'actpendins_2026_05_30.txt',
+      'inshist_2026_05_30.txt',
+      'authhist_2026_05_30.txt',
+    ];
+
+    try {
+      for (const file of files) {
+        fs.writeFileSync(path.join(dir, file), '');
+      }
+
+      const selected = selectBatchFiles(dir, 'diff', parseDatasetList('carrier,active-insurance,insurance-history'));
+
+      expect(selected.map((file) => file.datasetType)).toEqual([
+        'carrier',
+        'active-insurance',
+        'insurance-history',
+      ]);
+      expect(selected.map((file) => path.basename(file.filePath))).toEqual([
+        'carrier_2026_05_30.txt',
+        'actpendins_2026_05_30.txt',
+        'inshist_2026_05_30.txt',
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('batch import selection supports broker-check v1 datasets without revocation or authority-history', () => {
+    const datasets = parseDatasetList('carrier,active-insurance,insurance-history');
+
+    expect(datasets).toEqual(['carrier', 'active-insurance', 'insurance-history']);
   });
 
   it('dedupes exact duplicate source records inside one batch', async () => {
