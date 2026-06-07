@@ -329,9 +329,10 @@ describe('FMCSA data importer', () => {
 
     expect(batch.text).toContain('INSERT INTO fmcsa_active_pending_insurance');
     expect(batch.text).toContain('ON CONFLICT (source_record_hash)');
-    expect(batch.text).toContain('DO UPDATE SET');
-    expect(batch.text).toContain('raw_record = EXCLUDED.raw_record');
-    expect(batch.text).toContain('updated_at = EXCLUDED.updated_at');
+    expect(batch.text).toContain('DO NOTHING');
+    expect(batch.text).not.toContain('DO UPDATE SET');
+    expect(batch.text).not.toContain('raw_record = EXCLUDED.raw_record');
+    expect(batch.text).not.toContain('updated_at = EXCLUDED.updated_at');
   });
 
   it('preserves rows with same selected columns but different hidden raw fields', () => {
@@ -452,6 +453,38 @@ describe('FMCSA data importer', () => {
         rowsFailed: 0,
         batches: 1,
       });
+      expect(pool.query).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.unlinkSync(filePath);
+    }
+  });
+
+  it('skips already processed data rows before inserting', async () => {
+    const filePath = path.join(os.tmpdir(), `fmcsa-import-skip-${Date.now()}.csv`);
+    fs.writeFileSync(
+      filePath,
+      [
+        'DOCKET_NUMBER,DOT_NUMBER,ins_form_code,ins_type_desc,name_company,policy_no,trans_date,underl_lim_amount,max_cov_amount,effective_date,cancl_effective_date',
+        'MC1,1,91X,BIPD,INS CO,POL1,01/01/2024,0,750,01/02/2024,',
+        'MC2,2,91X,BIPD,INS CO,POL2,01/01/2024,0,750,01/03/2024,',
+        'MC3,3,91X,BIPD,INS CO,POL3,01/01/2024,0,750,01/04/2024,',
+      ].join('\n'),
+    );
+    const pool = { query: jest.fn().mockResolvedValue({ rowCount: 1 }) };
+
+    try {
+      const stats = await importFmcsaDataset({
+        datasetType: 'active-insurance',
+        inputSource: filePath,
+        sourceFormat: 'allHist',
+        pool,
+        batchSize: 10,
+        skipRows: 2,
+      });
+
+      expect(stats.rowsRead).toBe(3);
+      expect(stats.rowsSkipped).toBe(2);
+      expect(stats.rowsInsertedOrUpdated).toBe(1);
       expect(pool.query).toHaveBeenCalledTimes(1);
     } finally {
       fs.unlinkSync(filePath);

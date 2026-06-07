@@ -39,6 +39,7 @@ export interface ImportStats {
   sourceFormat: FmcsaSourceFormat;
   inputSource: string;
   rowsRead: number;
+  rowsSkipped: number;
   rowsInsertedOrUpdated: number;
   rowsFailed: number;
   batches: number;
@@ -52,6 +53,8 @@ export interface ImportOptions {
   batchSize?: number;
   s3Client?: S3Client;
   sourceFormat?: FmcsaSourceFormat;
+  skipRows?: number;
+  progressEvery?: number;
 }
 
 export interface DryRunPreview {
@@ -531,6 +534,19 @@ export function getBatchSize(value = process.env.FMCSA_IMPORT_BATCH_SIZE): numbe
   return parsed;
 }
 
+export function parseNonNegativeInteger(value: string | undefined, name: string): number {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+
+  return parsed;
+}
+
 export function normalizeNullable(value: string | undefined): string | null {
   const trimmed = value?.trim() ?? '';
   return trimmed === '' ? null : trimmed;
@@ -760,17 +776,13 @@ export function buildUpsertBatch(datasetType: DatasetType, rows: Array<Record<st
 
     return `(${placeholders.join(', ')})`;
   });
-  const updateColumns = config.insertColumns.filter(
-    (column) => !config.conflictColumns.includes(column) && column !== 'imported_at',
-  );
-  const assignments = updateColumns.map((column) => `${column} = EXCLUDED.${column}`);
 
   return {
     text: `
       INSERT INTO ${config.tableName} (${config.insertColumns.join(', ')})
       VALUES ${tuples.join(', ')}
       ON CONFLICT (${config.conflictColumns.join(', ')})
-      DO UPDATE SET ${assignments.join(', ')}
+      DO NOTHING
     `,
     values,
   };
@@ -807,6 +819,8 @@ export async function createInputStream(
 export async function importFmcsaDataset(options: ImportOptions): Promise<ImportStats> {
   const batchSize = options.batchSize ?? getBatchSize();
   const sourceFormat = options.sourceFormat ?? 'allHist';
+  const skipRows = options.skipRows ?? 0;
+  const progressEvery = options.progressEvery ?? 0;
   const stream = await createInputStream(options.inputSource, { s3Client: options.s3Client });
   const startedAt = process.hrtime.bigint();
   const stats: ImportStats = {
@@ -814,6 +828,7 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
     sourceFormat,
     inputSource: options.inputSource,
     rowsRead: 0,
+    rowsSkipped: 0,
     rowsInsertedOrUpdated: 0,
     rowsFailed: 0,
     batches: 0,
@@ -850,6 +865,14 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
 
     try {
       stats.rowsRead += 1;
+      if (stats.rowsRead <= skipRows) {
+        stats.rowsSkipped += 1;
+        if (progressEvery > 0 && stats.rowsRead % progressEvery === 0) {
+          logImportProgress(stats, startedAt);
+        }
+        continue;
+      }
+
       const row = mapDatasetRow(options.datasetType, fields, headers, sourceFormat);
       if (!row) {
         stats.rowsFailed += 1;
@@ -860,6 +883,10 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
       if (pendingRows.length >= batchSize) {
         await flush();
       }
+
+      if (progressEvery > 0 && stats.rowsRead % progressEvery === 0) {
+        logImportProgress(stats, startedAt);
+      }
     } catch {
       stats.rowsFailed += 1;
     }
@@ -869,6 +896,22 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
   stats.durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
 
   return stats;
+}
+
+function logImportProgress(stats: ImportStats, startedAt: bigint): void {
+  const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  const rowsPerSecond = durationMs > 0 ? stats.rowsRead / (durationMs / 1000) : 0;
+  console.log(
+    [
+      `progress ${stats.datasetType}:`,
+      `rows read=${stats.rowsRead}`,
+      `skipped=${stats.rowsSkipped}`,
+      `inserted=${stats.rowsInsertedOrUpdated}`,
+      `failed=${stats.rowsFailed}`,
+      `batches=${stats.batches}`,
+      `rate=${rowsPerSecond.toFixed(0)} rows/s`,
+    ].join(' '),
+  );
 }
 
 export async function previewFmcsaDataset(options: {

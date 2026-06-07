@@ -4,6 +4,7 @@ import {
   DATASET_TYPES,
   getBatchSize,
   importFmcsaDataset,
+  parseNonNegativeInteger,
   parseDatasetType,
   parseSourceFormat,
   previewFmcsaDataset,
@@ -17,6 +18,8 @@ interface CliArgs {
   inputSource: string;
   sourceFormat: FmcsaSourceFormat;
   dryRun: boolean;
+  skipRows: number;
+  progressEvery: number;
 }
 
 function parseArgs(args: string[]): CliArgs {
@@ -24,6 +27,8 @@ function parseArgs(args: string[]): CliArgs {
   const inputSource = args[1];
   let sourceFormat: FmcsaSourceFormat | undefined;
   let dryRun = false;
+  let skipRows = 0;
+  let progressEvery = 100000;
 
   if (!inputSource) {
     throw new Error(
@@ -45,6 +50,18 @@ function parseArgs(args: string[]): CliArgs {
       continue;
     }
 
+    if (arg === '--skip-rows') {
+      skipRows = parseNonNegativeInteger(args[index + 1], '--skip-rows');
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--progress-every') {
+      progressEvery = parseNonNegativeInteger(args[index + 1], '--progress-every');
+      index += 1;
+      continue;
+    }
+
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -52,11 +69,11 @@ function parseArgs(args: string[]): CliArgs {
     throw new Error('--source is required and must be either "diff" or "allHist"');
   }
 
-  return { datasetType, inputSource, sourceFormat, dryRun };
+  return { datasetType, inputSource, sourceFormat, dryRun, skipRows, progressEvery };
 }
 
 async function main() {
-  const { datasetType, inputSource, sourceFormat, dryRun } = parseArgs(process.argv.slice(2));
+  const { datasetType, inputSource, sourceFormat, dryRun, skipRows, progressEvery } = parseArgs(process.argv.slice(2));
 
   if (dryRun) {
     const preview = await previewFmcsaDataset({
@@ -79,6 +96,8 @@ async function main() {
   console.log(`source: ${sourceFormat}`);
   console.log(`input source: ${inputSource}`);
   console.log(`batch size: ${batchSize}`);
+  console.log(`skip rows: ${skipRows}`);
+  console.log(`progress every: ${progressEvery}`);
   console.log(`started at: ${new Date().toISOString()}`);
 
   try {
@@ -88,10 +107,13 @@ async function main() {
       sourceFormat,
       pool,
       batchSize,
+      skipRows,
+      progressEvery,
     });
 
     console.log(`finished at: ${new Date().toISOString()}`);
     console.log(`rows read: ${stats.rowsRead}`);
+    console.log(`rows skipped: ${stats.rowsSkipped}`);
     console.log(`rows inserted/updated: ${stats.rowsInsertedOrUpdated}`);
     console.log(`rows failed: ${stats.rowsFailed}`);
     console.log(`batches: ${stats.batches}`);

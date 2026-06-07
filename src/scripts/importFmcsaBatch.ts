@@ -7,6 +7,7 @@ import {
   getBatchSize,
   importFmcsaDataset,
   parseDatasetType,
+  parseNonNegativeInteger,
   parseSourceFormat,
   previewFmcsaDataset,
   type DatasetType,
@@ -20,6 +21,8 @@ interface CliArgs {
   datasets: DatasetType[];
   dir: string;
   dryRun: boolean;
+  skipRows: number;
+  progressEvery: number;
 }
 
 export interface SelectedFile {
@@ -110,6 +113,8 @@ function parseArgs(args: string[]): CliArgs {
   let datasets: DatasetType[] | undefined;
   let dir: string | undefined;
   let dryRun = false;
+  let skipRows = 0;
+  let progressEvery = 100000;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -140,6 +145,18 @@ function parseArgs(args: string[]): CliArgs {
       continue;
     }
 
+    if (arg === '--skip-rows') {
+      skipRows = parseNonNegativeInteger(args[index + 1], '--skip-rows');
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--progress-every') {
+      progressEvery = parseNonNegativeInteger(args[index + 1], '--progress-every');
+      index += 1;
+      continue;
+    }
+
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -155,11 +172,17 @@ function parseArgs(args: string[]): CliArgs {
     throw new Error('--dir is required');
   }
 
+  if (skipRows > 0 && datasets.length !== 1) {
+    throw new Error('--skip-rows can only be used when exactly one dataset is selected.');
+  }
+
   return {
     sourceFormat,
     datasets,
     dir: path.resolve(process.cwd(), dir),
     dryRun,
+    skipRows,
+    progressEvery,
   };
 }
 
@@ -168,6 +191,8 @@ async function runBatchImport(args: CliArgs): Promise<void> {
 
   console.log(`source: ${args.sourceFormat}`);
   console.log(`dir: ${args.dir}`);
+  console.log(`skip rows: ${args.skipRows}`);
+  console.log(`progress every: ${args.progressEvery}`);
   console.log('selected files:');
   for (const selectedFile of selectedFiles) {
     console.log(`- ${selectedFile.datasetType}: ${selectedFile.filePath}`);
@@ -206,6 +231,8 @@ async function runBatchImport(args: CliArgs): Promise<void> {
         sourceFormat: args.sourceFormat,
         pool,
         batchSize,
+        skipRows: args.skipRows,
+        progressEvery: args.progressEvery,
       });
       summary.push(stats);
     }
@@ -217,7 +244,7 @@ async function runBatchImport(args: CliArgs): Promise<void> {
   console.log('Summary');
   for (const stats of summary) {
     console.log(
-      `${stats.datasetType}: rows read=${stats.rowsRead}, inserted/updated=${stats.rowsInsertedOrUpdated}, failed=${stats.rowsFailed}, batches=${stats.batches}`,
+      `${stats.datasetType}: rows read=${stats.rowsRead}, skipped=${stats.rowsSkipped}, inserted=${stats.rowsInsertedOrUpdated}, failed=${stats.rowsFailed}, batches=${stats.batches}`,
     );
   }
 }
