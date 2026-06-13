@@ -20,6 +20,9 @@ import {
   parseDatasetList,
   selectBatchFiles,
 } from '../src/scripts/importFmcsaBatch';
+import {
+  downloadToFile,
+} from '../src/scripts/downloadFmcsaFiles';
 
 async function collectRows(stream: Readable) {
   const rows: string[][] = [];
@@ -586,5 +589,102 @@ describe('FMCSA data importer', () => {
     expect(rows).toEqual([
       ['MC1557892', '4090101', 'BROKER', '10/01/2024', 'VOLUNTARY', '10/31/2024'],
     ]);
+  });
+
+  it('retries transient FMCSA download failures and succeeds', async () => {
+    const filePath = path.join(os.tmpdir(), `fmcsa-download-retry-${Date.now()}.txt`);
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 503, statusText: 'Service Temporarily Unavailable' }))
+      .mockResolvedValueOnce(new Response(Readable.toWeb(Readable.from(['downloaded'])) as BodyInit));
+    const warnMock = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await downloadToFile('https://data.transportation.gov/api/views/example/rows.csv', filePath, {
+        datasetName: 'carrier',
+        source: 'diff',
+        retryBaseDelayMs: 0,
+        sleep: async () => undefined,
+        random: () => 0,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe('downloaded');
+      expect(warnMock.mock.calls[0].join(' ')).toContain('HTTP 503');
+      expect(warnMock.mock.calls[0].join(' ')).toContain('data.transportation.gov/api/views/example/rows.csv');
+    } finally {
+      fs.rmSync(filePath, { force: true });
+      fs.rmSync(`${filePath}.tmp`, { force: true });
+    }
+  });
+
+  it('fails after max retries for transient FMCSA download failures', async () => {
+    const filePath = path.join(os.tmpdir(), `fmcsa-download-fail-${Date.now()}.txt`);
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 503, statusText: 'Service Temporarily Unavailable' }));
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(downloadToFile('https://data.transportation.gov/api/views/example/rows.csv', filePath, {
+        datasetName: 'carrier',
+        source: 'diff',
+        maxAttempts: 3,
+        retryBaseDelayMs: 0,
+        sleep: async () => undefined,
+        random: () => 0,
+      })).rejects.toThrow('Download failed: 503 Service Temporarily Unavailable');
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fs.existsSync(filePath)).toBe(false);
+    } finally {
+      fs.rmSync(filePath, { force: true });
+      fs.rmSync(`${filePath}.tmp`, { force: true });
+    }
+  });
+
+  it('does not retry non-transient FMCSA download failures', async () => {
+    const filePath = path.join(os.tmpdir(), `fmcsa-download-non-retry-${Date.now()}.txt`);
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 401, statusText: 'Unauthorized' }));
+
+    try {
+      await expect(downloadToFile('https://data.transportation.gov/api/views/example/rows.csv', filePath, {
+        datasetName: 'carrier',
+        source: 'diff',
+        sleep: async () => undefined,
+      })).rejects.toThrow('Download failed: 401 Unauthorized');
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(filePath, { force: true });
+      fs.rmSync(`${filePath}.tmp`, { force: true });
+    }
+  });
+
+  it('does not log Socrata app tokens during retry logging', async () => {
+    const filePath = path.join(os.tmpdir(), `fmcsa-download-token-log-${Date.now()}.txt`);
+    const token = 'secret-socrata-token';
+    jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 503, statusText: 'Service Temporarily Unavailable' }))
+      .mockResolvedValueOnce(new Response(Readable.toWeb(Readable.from(['downloaded'])) as BodyInit));
+    const warnMock = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await downloadToFile('https://data.transportation.gov/api/views/example/export.csv?app_token=should-not-appear', filePath, {
+        headers: { 'X-App-Token': token },
+        datasetName: 'carrier',
+        source: 'diff',
+        retryBaseDelayMs: 0,
+        sleep: async () => undefined,
+        random: () => 0,
+      });
+
+      const logs = warnMock.mock.calls.flat().join('\n');
+      expect(logs).not.toContain(token);
+      expect(logs).not.toContain('should-not-appear');
+      expect(logs).toContain('data.transportation.gov/api/views/example/export.csv');
+    } finally {
+      fs.rmSync(filePath, { force: true });
+      fs.rmSync(`${filePath}.tmp`, { force: true });
+    }
   });
 });

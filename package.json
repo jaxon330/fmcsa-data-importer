@@ -9,6 +9,7 @@
     "download:fmcsa": "ts-node src/scripts/downloadFmcsaFiles.ts",
     "import:fmcsa": "ts-node scripts/importFmcsa.ts",
     "import:fmcsa:batch": "ts-node src/scripts/importFmcsaBatch.ts",
+    "sync:fmcsa": "ts-node src/scripts/syncFmcsa.ts",
     "import:authority-history": "ts-node scripts/importAuthorityHistory.ts",
     "test": "jest --runInBand"
   },

@@ -1,52 +1,72 @@
 import { createWriteStream } from 'fs';
-import { existsSync } from 'fs';
+import os from 'os';
 import { mkdir, rename, rm } from 'fs/promises';
 import dotenv from 'dotenv';
 import path from 'path';
 import process from 'process';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
+import { S3Client } from '@aws-sdk/client-s3';
 import {
   buildFmcsaDownloadUrl,
   buildFmcsaSodaExportUrl,
+  datasetKeyToName,
   FMCSA_DATASETS,
   type FmcsaDatasetKey,
   type FmcsaDownloadMode,
+  parseFmcsaDatasetKeys,
 } from '../config/fmcsaDatasets';
+import {
+  buildFmcsaRawFileRef,
+  getFmcsaRawDir,
+  getFmcsaRawStorageConfig,
+  rawFileExists,
+  toDisplayPath,
+  uploadRawFileToS3,
+  type FmcsaRawFileRef,
+} from '../storage/fmcsaRawStorage';
 
 interface CliArgs {
   downloadMode: FmcsaDownloadMode;
   force: boolean;
   datasetKeys?: FmcsaDatasetKey[];
+  dir?: string;
 }
 
-interface DownloadResult {
+export interface DownloadResult {
   datasetKey: FmcsaDatasetKey;
-  savedPath?: string;
+  datasetName: string;
+  fileRef?: FmcsaRawFileRef;
   skipped: boolean;
   failed: boolean;
+  error?: string;
 }
 
 const DOWNLOAD_MODES = ['diff', 'allHist'] as const;
-const DATASET_KEY_ALIASES: Record<string, FmcsaDatasetKey> = {
-  carrier: 'carrier',
-  activeInsurance: 'activeInsurance',
-  'active-insurance': 'activeInsurance',
-  insuranceHistory: 'insuranceHistory',
-  'insurance-history': 'insuranceHistory',
-  revocation: 'revocation',
-  authorityHistory: 'authorityHistory',
-  'authority-history': 'authorityHistory',
-};
-const DEFAULT_STORAGE_TYPE = 'local';
-const DEFAULT_RAW_DATA_DIR = './data/raw';
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_DOWNLOAD_ATTEMPTS = 3;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
+const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_ERROR_CODES = new Set(['ETIMEDOUT', 'ECONNRESET']);
 
 dotenv.config({ quiet: true });
+
+interface DownloadToFileOptions {
+  headers?: HeadersInit;
+  datasetName?: string;
+  source?: FmcsaDownloadMode;
+  maxAttempts?: number;
+  timeoutMs?: number;
+  retryBaseDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
+}
 
 function parseArgs(args: string[]): CliArgs {
   let downloadMode: FmcsaDownloadMode | undefined;
   let force = false;
   let datasetKeys: FmcsaDatasetKey[] | undefined;
+  let dir: string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -67,7 +87,16 @@ function parseArgs(args: string[]): CliArgs {
     }
 
     if (arg === '--datasets') {
-      datasetKeys = parseDatasetKeys(args[index + 1]);
+      datasetKeys = parseFmcsaDatasetKeys(args[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--dir') {
+      dir = args[index + 1];
+      if (!dir) {
+        throw new Error('--dir requires a directory path');
+      }
       index += 1;
       continue;
     }
@@ -79,26 +108,11 @@ function parseArgs(args: string[]): CliArgs {
     throw new Error('--download is required and must be either "diff" or "allHist"');
   }
 
-  return { downloadMode, force, datasetKeys };
+  return { downloadMode, force, datasetKeys, dir };
 }
 
 function isDownloadMode(value: string | undefined): value is FmcsaDownloadMode {
   return DOWNLOAD_MODES.some((mode) => mode === value);
-}
-
-function parseDatasetKeys(value: string | undefined): FmcsaDatasetKey[] {
-  if (!value) {
-    throw new Error('--datasets requires a comma-separated dataset list');
-  }
-
-  return value.split(',').map((rawDatasetKey) => {
-    const datasetKey = DATASET_KEY_ALIASES[rawDatasetKey.trim()];
-    if (!datasetKey) {
-      throw new Error(`Unsupported dataset "${rawDatasetKey}". Supported values: ${Object.keys(DATASET_KEY_ALIASES).join(', ')}`);
-    }
-
-    return datasetKey;
-  });
 }
 
 function formatDateForFilename(date: Date): string {
@@ -113,93 +127,230 @@ function buildFilename(filePrefix: string, extension: string, date: Date): strin
   return `${filePrefix}_${formatDateForFilename(date)}.${extension}`;
 }
 
-function toDisplayPath(filePath: string): string {
-  const relativePath = path.relative(process.cwd(), filePath);
-  if (!relativePath || relativePath.startsWith('..')) {
-    return filePath;
-  }
-
-  return relativePath;
-}
-
-async function downloadToFile(url: string, targetPath: string): Promise<void> {
+export async function downloadToFile(url: string, targetPath: string, options: DownloadToFileOptions = {}): Promise<void> {
   const tempPath = `${targetPath}.tmp`;
+  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_DOWNLOAD_ATTEMPTS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+  const sleep = options.sleep ?? delay;
+  const random = options.random ?? Math.random;
 
   await rm(tempPath, { force: true });
 
   try {
-    const response = await fetch(url);
-    if (!response.ok || !response.body) {
-      throw new Error(`Download failed: ${response.status} ${response.statusText} (${url})`);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await fetchWithTimeout(url, options.headers, timeoutMs);
+        if (!response.ok || !response.body) {
+          if (response.status === 403 && url.includes('/export.csv')) {
+            throw new Error('Socrata app token required. Set FMCSA_SOCRATA_APP_TOKEN.');
+          }
+
+          const error = new Error(`Download failed: ${response.status} ${response.statusText}`);
+          if (response.ok || !isRetryableStatus(response.status) || attempt === maxAttempts) {
+            throw error;
+          }
+
+          logRetryAttempt({ url, attempt, maxAttempts, status: response.status, datasetName: options.datasetName, source: options.source });
+          await sleep(computeRetryDelayMs(attempt, retryBaseDelayMs, random));
+          continue;
+        }
+
+        const fileStream = createWriteStream(tempPath);
+        await pipeline(Readable.fromWeb(response.body as any), fileStream);
+        await rename(tempPath, targetPath);
+        return;
+      } catch (error) {
+        if (!isRetryableNetworkError(error) || attempt === maxAttempts) {
+          throw error;
+        }
+
+        logRetryAttempt({
+          url,
+          attempt,
+          maxAttempts,
+          error,
+          datasetName: options.datasetName,
+          source: options.source,
+        });
+        await sleep(computeRetryDelayMs(attempt, retryBaseDelayMs, random));
+      }
     }
 
-    const fileStream = createWriteStream(tempPath);
-    await pipeline(Readable.fromWeb(response.body as any), fileStream);
-    await rename(tempPath, targetPath);
+    throw new Error('Download failed after retry attempts');
   } catch (error) {
     await rm(tempPath, { force: true });
     throw error;
   }
 }
 
-async function run(): Promise<void> {
-  const { downloadMode, force, datasetKeys } = parseArgs(process.argv.slice(2));
-  const storageType = process.env.FMCSA_STORAGE_TYPE ?? DEFAULT_STORAGE_TYPE;
-  const rawDataDir = process.env.FMCSA_LOCAL_RAW_DATA_DIR ?? DEFAULT_RAW_DATA_DIR;
+async function fetchWithTimeout(url: string, headers: HeadersInit | undefined, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (storageType !== 'local') {
-    throw new Error(`Unsupported FMCSA_STORAGE_TYPE "${storageType}". Only "local" is implemented.`);
+  try {
+    return await fetch(url, { headers, signal: controller.signal });
+  } catch (error) {
+    if (isAbortError(error)) {
+      const timeoutError = new Error(`Download timed out after ${timeoutMs}ms`);
+      (timeoutError as NodeJS.ErrnoException).code = 'ETIMEDOUT';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return RETRYABLE_HTTP_STATUSES.has(status);
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
   }
 
-  const outputFolder = path.resolve(process.cwd(), rawDataDir, downloadMode);
+  const errorRecord = error as { code?: string; cause?: { code?: string } };
+  return RETRYABLE_ERROR_CODES.has(errorRecord.code ?? '') || RETRYABLE_ERROR_CODES.has(errorRecord.cause?.code ?? '');
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function computeRetryDelayMs(attempt: number, baseDelayMs: number, random: () => number): number {
+  const exponentialDelay = baseDelayMs * 2 ** (attempt - 1);
+  const jitter = Math.floor(random() * baseDelayMs);
+  return exponentialDelay + jitter;
+}
+
+function logRetryAttempt(input: {
+  url: string;
+  attempt: number;
+  maxAttempts: number;
+  status?: number;
+  error?: unknown;
+  datasetName?: string;
+  source?: FmcsaDownloadMode;
+}): void {
+  const retryReason = input.status ? `HTTP ${input.status}` : formatRetryableError(input.error);
+  console.warn(
+    [
+      'Transient FMCSA download failure.',
+      `attempt=${input.attempt}/${input.maxAttempts}`,
+      `dataset=${input.datasetName ?? 'unknown'}`,
+      `source=${input.source ?? 'unknown'}`,
+      `url=${sanitizeUrl(input.url)}`,
+      `reason=${retryReason}`,
+    ].join(' '),
+  );
+}
+
+function sanitizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return 'invalid-url';
+  }
+}
+
+function formatRetryableError(error: unknown): string {
+  if (error instanceof Error) {
+    const errorRecord = error as NodeJS.ErrnoException & { cause?: { code?: string } };
+    return errorRecord.code ?? errorRecord.cause?.code ?? error.name;
+  }
+  return 'network-error';
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function downloadFmcsaFiles(options: {
+  downloadMode: FmcsaDownloadMode;
+  force?: boolean;
+  datasetKeys?: FmcsaDatasetKey[];
+  dir?: string;
+  date?: Date;
+}): Promise<DownloadResult[]> {
+  const storage = getFmcsaRawStorageConfig(options.dir);
   const socrataAppToken = process.env.FMCSA_SOCRATA_APP_TOKEN ?? process.env.SOCRATA_APP_TOKEN;
-  await mkdir(outputFolder, { recursive: true });
+  const s3Client = new S3Client({});
+  const localDownloadFolder =
+    storage.storageType === 'local'
+      ? getFmcsaRawDir(storage, options.downloadMode)
+      : path.join(os.tmpdir(), 'fmcsa-data-importer', options.downloadMode);
+  await mkdir(localDownloadFolder, { recursive: true });
 
   const results: DownloadResult[] = [];
-  const today = new Date();
-  const datasets = FMCSA_DATASETS[downloadMode];
-  const selectedDatasetKeys = datasetKeys ?? (Object.keys(datasets) as FmcsaDatasetKey[]);
+  const today = options.date ?? new Date();
+  const datasets = FMCSA_DATASETS[options.downloadMode];
+  const selectedDatasetKeys = options.datasetKeys ?? (Object.keys(datasets) as FmcsaDatasetKey[]);
 
   for (const datasetKey of selectedDatasetKeys) {
     const dataset = datasets[datasetKey];
     const filename = buildFilename(dataset.filePrefix, dataset.extension, today);
-    const targetPath = path.join(outputFolder, filename);
+    const fileRef = buildFmcsaRawFileRef(storage, options.downloadMode, filename);
+    const targetPath = fileRef.localPath ?? path.join(localDownloadFolder, filename);
+    const datasetName = datasetKeyToName(datasetKey);
 
-    console.log(`Downloading ${datasetKey}...`);
+    console.log(`Downloading ${datasetName}...`);
 
-    if (existsSync(targetPath) && !force) {
+    if (!options.force && await rawFileExists(fileRef, s3Client)) {
       console.log('Skipped: already exists');
-      results.push({ datasetKey, savedPath: targetPath, skipped: true, failed: false });
+      results.push({ datasetKey, datasetName, fileRef, skipped: true, failed: false });
       continue;
     }
 
     try {
       const downloadUrl =
-        downloadMode === 'diff'
+        options.downloadMode === 'diff'
           ? buildFmcsaDownloadUrl(dataset.datasetId)
-          : buildFmcsaSodaExportUrl(dataset.datasetId, socrataAppToken);
+          : buildFmcsaSodaExportUrl(dataset.datasetId);
+      const headers = socrataAppToken ? { 'X-App-Token': socrataAppToken } : undefined;
 
-      await downloadToFile(downloadUrl, targetPath);
-      console.log(`Saved: ${toDisplayPath(targetPath)}`);
-      results.push({ datasetKey, savedPath: targetPath, skipped: false, failed: false });
+      await downloadToFile(downloadUrl, targetPath, {
+        headers,
+        datasetName,
+        source: options.downloadMode,
+      });
+      if (fileRef.s3Key) {
+        await uploadRawFileToS3(targetPath, fileRef, s3Client);
+        await rm(targetPath, { force: true });
+      }
+      console.log(`Saved: ${fileRef.displayPath}`);
+      results.push({ datasetKey, datasetName, fileRef, skipped: false, failed: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Failed: ${message}`);
-      results.push({ datasetKey, skipped: false, failed: true });
+      results.push({ datasetKey, datasetName, fileRef, skipped: false, failed: true, error: message });
     }
   }
 
+  return results;
+}
+
+async function run(): Promise<void> {
+  const { downloadMode, force, datasetKeys, dir } = parseArgs(process.argv.slice(2));
+  const storage = getFmcsaRawStorageConfig(dir);
+  const outputFolder =
+    storage.storageType === 'local'
+      ? toDisplayPath(getFmcsaRawDir(storage, downloadMode))
+      : `s3://${storage.s3BucketName}/${[storage.s3Prefix, downloadMode].filter(Boolean).join('/')}`;
+  const results = await downloadFmcsaFiles({ downloadMode, force, datasetKeys, dir });
   const downloadedCount = results.filter((result) => !result.skipped && !result.failed).length;
   const skippedCount = results.filter((result) => result.skipped).length;
   const failedCount = results.filter((result) => result.failed).length;
   const savedFiles = results
-    .filter((result) => result.savedPath && !result.skipped && !result.failed)
-    .map((result) => toDisplayPath(result.savedPath as string));
+    .filter((result) => result.fileRef && !result.skipped && !result.failed)
+    .map((result) => result.fileRef?.displayPath as string);
 
   console.log('');
   console.log('Summary');
   console.log(`Mode: ${downloadMode}`);
-  console.log(`Output folder: ${toDisplayPath(outputFolder)}`);
+  console.log(`Output folder: ${outputFolder}`);
   console.log(`Downloaded: ${downloadedCount}`);
   console.log(`Skipped: ${skippedCount}`);
   console.log(`Failed: ${failedCount}`);
@@ -217,8 +368,10 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  run().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    process.exitCode = 1;
+  });
+}

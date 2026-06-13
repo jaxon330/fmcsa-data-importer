@@ -7,6 +7,13 @@ export type FmcsaDatasetKey =
   | 'revocation'
   | 'authorityHistory';
 
+export type FmcsaDatasetName =
+  | 'carrier'
+  | 'active-insurance'
+  | 'insurance-history'
+  | 'revocation'
+  | 'authority-history';
+
 export interface FmcsaDatasetDownloadConfig {
   datasetId: string;
   filePrefix: string;
@@ -16,6 +23,39 @@ export interface FmcsaDatasetDownloadConfig {
 export const FMCSA_BASE_DOWNLOAD_URL = 'https://data.transportation.gov/api/views';
 export const FMCSA_ASSET_DOWNLOAD_URL = 'https://data.transportation.gov/download';
 export const FMCSA_SODA3_DOWNLOAD_URL = 'https://data.transportation.gov/api/v3/views';
+
+export const BROKER_CHECK_V1_DATASETS: FmcsaDatasetName[] = [
+  'carrier',
+  'active-insurance',
+  'insurance-history',
+];
+
+export const DATASET_KEY_TO_NAME: Record<FmcsaDatasetKey, FmcsaDatasetName> = {
+  carrier: 'carrier',
+  activeInsurance: 'active-insurance',
+  insuranceHistory: 'insurance-history',
+  revocation: 'revocation',
+  authorityHistory: 'authority-history',
+};
+
+export const DATASET_NAME_TO_KEY: Record<FmcsaDatasetName, FmcsaDatasetKey> = {
+  carrier: 'carrier',
+  'active-insurance': 'activeInsurance',
+  'insurance-history': 'insuranceHistory',
+  revocation: 'revocation',
+  'authority-history': 'authorityHistory',
+};
+
+export const DATASET_KEY_ALIASES: Record<string, FmcsaDatasetKey> = {
+  carrier: 'carrier',
+  activeInsurance: 'activeInsurance',
+  'active-insurance': 'activeInsurance',
+  insuranceHistory: 'insuranceHistory',
+  'insurance-history': 'insuranceHistory',
+  revocation: 'revocation',
+  authorityHistory: 'authorityHistory',
+  'authority-history': 'authorityHistory',
+};
 
 export const FMCSA_DATASETS = {
   diff: {
@@ -81,13 +121,42 @@ export function buildFmcsaDownloadUrl(datasetId: string): string {
   return `${FMCSA_ASSET_DOWNLOAD_URL}/${datasetId}/application/octet-stream`;
 }
 
-export function buildFmcsaSodaExportUrl(datasetId: string, appToken?: string): string {
+export function parseFmcsaDatasetKeys(value: string | undefined, defaultDatasets?: FmcsaDatasetName[]): FmcsaDatasetKey[] {
+  const rawDatasetNames = value
+    ? value.split(',').map((rawDatasetKey) => rawDatasetKey.trim()).filter(Boolean)
+    : defaultDatasets ?? [];
+
+  if (rawDatasetNames.length === 0) {
+    throw new Error(`--datasets requires a comma-separated dataset list. Supported values: ${supportedDatasetNames().join(', ')}`);
+  }
+
+  const seen = new Set<FmcsaDatasetKey>();
+  return rawDatasetNames.map((rawDatasetKey) => {
+    const datasetKey = DATASET_KEY_ALIASES[rawDatasetKey];
+    if (!datasetKey) {
+      throw new Error(`Unsupported dataset "${rawDatasetKey}". Supported values: ${supportedDatasetNames().join(', ')}`);
+    }
+
+    if (seen.has(datasetKey)) {
+      throw new Error(`Duplicate dataset "${rawDatasetKey}"`);
+    }
+    seen.add(datasetKey);
+
+    return datasetKey;
+  });
+}
+
+export function datasetKeyToName(datasetKey: FmcsaDatasetKey): FmcsaDatasetName {
+  return DATASET_KEY_TO_NAME[datasetKey];
+}
+
+export function supportedDatasetNames(): FmcsaDatasetName[] {
+  return ['carrier', 'active-insurance', 'insurance-history', 'revocation', 'authority-history'];
+}
+
+export function buildFmcsaSodaExportUrl(datasetId: string): string {
   const url = new URL(`${FMCSA_SODA3_DOWNLOAD_URL}/${datasetId}/export.csv`);
   url.searchParams.set('accessType', 'DOWNLOAD');
-
-  if (appToken) {
-    url.searchParams.set('app_token', appToken);
-  }
 
   return url.toString();
 }
