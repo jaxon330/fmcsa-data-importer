@@ -21,8 +21,14 @@ import {
   selectBatchFiles,
 } from '../src/scripts/importFmcsaBatch';
 import {
+  downloadFmcsaFiles,
   downloadToFile,
 } from '../src/scripts/downloadFmcsaFiles';
+import {
+  buildProcessedFileIdentityRef,
+  getFmcsaRawStorageConfig,
+  markProcessedFileIdentity,
+} from '../src/storage/fmcsaRawStorage';
 
 async function collectRows(stream: Readable) {
   const rows: string[][] = [];
@@ -35,8 +41,11 @@ async function collectRows(stream: Readable) {
 }
 
 describe('FMCSA data importer', () => {
+  const originalEnv = process.env;
+
   afterEach(() => {
     jest.restoreAllMocks();
+    process.env = originalEnv;
   });
 
   it('parses quoted CSV/TXT rows', () => {
@@ -617,6 +626,38 @@ describe('FMCSA data importer', () => {
     }
   });
 
+  it('skips an unpublished daily diff file on 404 without retrying or failing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmcsa-diff-404-'));
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 404, statusText: 'Not Found' }));
+    const logMock = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    process.env = { ...originalEnv, FMCSA_STORAGE_TYPE: 'local' };
+
+    try {
+      const results = await downloadFmcsaFiles({
+        downloadMode: 'diff',
+        datasetKeys: ['carrier'],
+        dir,
+        date: new Date('2026-06-14T12:00:00Z'),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(results).toEqual([
+        expect.objectContaining({
+          datasetKey: 'carrier',
+          skipped: true,
+          skippedReason: 'not_published',
+          failed: false,
+          error: 'Download failed: 404 Not Found',
+        }),
+      ]);
+      expect(logMock.mock.calls.flat().join('\n')).toContain('daily diff file not published yet');
+      expect(fs.existsSync(path.join(dir, 'diff', 'carrier_2026_06_14.txt'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('fails after max retries for transient FMCSA download failures', async () => {
     const filePath = path.join(os.tmpdir(), `fmcsa-download-fail-${Date.now()}.txt`);
     const fetchMock = jest.spyOn(globalThis, 'fetch')
@@ -638,6 +679,90 @@ describe('FMCSA data importer', () => {
     } finally {
       fs.rmSync(filePath, { force: true });
       fs.rmSync(`${filePath}.tmp`, { force: true });
+    }
+  });
+
+  it('downloads a daily diff file and captures file identity metadata', async () => {
+    const filePath = path.join(os.tmpdir(), `fmcsa-download-identity-${Date.now()}.txt`);
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(Readable.toWeb(Readable.from(['downloaded'])) as BodyInit, {
+        headers: {
+          ETag: '"daily-diff-etag"',
+          'Last-Modified': 'Sun, 14 Jun 2026 10:00:00 GMT',
+          'Content-Length': '10',
+        },
+      }),
+    );
+
+    try {
+      const result = await downloadToFile('https://data.transportation.gov/download/6qg9-x4f8/application/octet-stream', filePath, {
+        datasetName: 'carrier',
+        source: 'diff',
+      });
+
+      expect(fs.readFileSync(filePath, 'utf8')).toBe('downloaded');
+      expect(result.identity).toMatchObject({
+        etag: '"daily-diff-etag"',
+        lastModified: 'Sun, 14 Jun 2026 10:00:00 GMT',
+        contentLength: 10,
+      });
+      expect(result.identity.sha256).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      fs.rmSync(filePath, { force: true });
+      fs.rmSync(`${filePath}.tmp`, { force: true });
+    }
+  });
+
+  it('skips a daily diff file with the same processed ETag/hash identity', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmcsa-diff-processed-'));
+    const body = 'downloaded';
+    const firstResponseHeaders = {
+      ETag: '"same-daily-diff"',
+      'Last-Modified': 'Sun, 14 Jun 2026 10:00:00 GMT',
+      'Content-Length': String(body.length),
+    };
+    const secondResponseHeaders = {
+      ETag: '"same-daily-diff"',
+      'Last-Modified': 'Sun, 14 Jun 2026 10:00:00 GMT',
+      'Content-Length': String(body.length),
+    };
+    jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(Readable.toWeb(Readable.from([body])) as BodyInit, { headers: firstResponseHeaders }))
+      .mockResolvedValueOnce(new Response(Readable.toWeb(Readable.from([body])) as BodyInit, { headers: secondResponseHeaders }));
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    process.env = { ...originalEnv, FMCSA_STORAGE_TYPE: 'local' };
+
+    try {
+      const first = await downloadFmcsaFiles({
+        downloadMode: 'diff',
+        datasetKeys: ['carrier'],
+        dir,
+        date: new Date('2026-06-14T12:00:00Z'),
+      });
+      expect(first[0].failed).toBe(false);
+      expect(first[0].skipped).toBe(false);
+      expect(first[0].downloadIdentity?.etag).toBe('"same-daily-diff"');
+
+      const storage = getFmcsaRawStorageConfig(dir);
+      const processedRef = buildProcessedFileIdentityRef(storage, 'diff', 'carrier', first[0].downloadIdentity!);
+      await markProcessedFileIdentity(processedRef, storage, { test: true });
+
+      const second = await downloadFmcsaFiles({
+        downloadMode: 'diff',
+        datasetKeys: ['carrier'],
+        dir,
+        date: new Date('2026-06-15T12:00:00Z'),
+      });
+
+      expect(second[0]).toEqual(expect.objectContaining({
+        datasetKey: 'carrier',
+        skipped: true,
+        skippedReason: 'already_processed',
+        failed: false,
+      }));
+      expect(fs.existsSync(path.join(dir, 'diff', 'carrier_2026_06_15.txt'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

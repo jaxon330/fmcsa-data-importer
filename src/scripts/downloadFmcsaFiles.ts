@@ -1,10 +1,11 @@
 import { createWriteStream } from 'fs';
+import crypto from 'crypto';
 import os from 'os';
 import { mkdir, rename, rm } from 'fs/promises';
 import dotenv from 'dotenv';
 import path from 'path';
 import process from 'process';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { S3Client } from '@aws-sdk/client-s3';
 import {
@@ -17,12 +18,15 @@ import {
   parseFmcsaDatasetKeys,
 } from '../config/fmcsaDatasets';
 import {
+  buildProcessedFileIdentityRef,
   buildFmcsaRawFileRef,
   getFmcsaRawDir,
   getFmcsaRawStorageConfig,
+  processedFileIdentityExists,
   rawFileExists,
   toDisplayPath,
   uploadRawFileToS3,
+  type FmcsaDownloadFileIdentity,
   type FmcsaRawFileRef,
 } from '../storage/fmcsaRawStorage';
 
@@ -37,6 +41,8 @@ export interface DownloadResult {
   datasetKey: FmcsaDatasetKey;
   datasetName: string;
   fileRef?: FmcsaRawFileRef;
+  downloadIdentity?: FmcsaDownloadFileIdentity;
+  skippedReason?: 'already_exists' | 'already_processed' | 'not_published';
   skipped: boolean;
   failed: boolean;
   error?: string;
@@ -60,6 +66,19 @@ interface DownloadToFileOptions {
   retryBaseDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+}
+
+export interface DownloadToFileResult {
+  identity: FmcsaDownloadFileIdentity;
+}
+
+export class DownloadHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly statusText: string,
+  ) {
+    super(`Download failed: ${status} ${statusText}`);
+  }
 }
 
 function parseArgs(args: string[]): CliArgs {
@@ -127,7 +146,7 @@ function buildFilename(filePrefix: string, extension: string, date: Date): strin
   return `${filePrefix}_${formatDateForFilename(date)}.${extension}`;
 }
 
-export async function downloadToFile(url: string, targetPath: string, options: DownloadToFileOptions = {}): Promise<void> {
+export async function downloadToFile(url: string, targetPath: string, options: DownloadToFileOptions = {}): Promise<DownloadToFileResult> {
   const tempPath = `${targetPath}.tmp`;
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_DOWNLOAD_ATTEMPTS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
@@ -146,7 +165,7 @@ export async function downloadToFile(url: string, targetPath: string, options: D
             throw new Error('Socrata app token required. Set FMCSA_SOCRATA_APP_TOKEN.');
           }
 
-          const error = new Error(`Download failed: ${response.status} ${response.statusText}`);
+          const error = new DownloadHttpError(response.status, response.statusText);
           if (response.ok || !isRetryableStatus(response.status) || attempt === maxAttempts) {
             throw error;
           }
@@ -156,10 +175,19 @@ export async function downloadToFile(url: string, targetPath: string, options: D
           continue;
         }
 
+        const identity = getResponseIdentity(response);
+        const hash = crypto.createHash('sha256');
         const fileStream = createWriteStream(tempPath);
-        await pipeline(Readable.fromWeb(response.body as any), fileStream);
+        const hashStream = new Transform({
+          transform(chunk, _encoding, callback) {
+            hash.update(chunk);
+            callback(null, chunk);
+          },
+        });
+        await pipeline(Readable.fromWeb(response.body as any), hashStream, fileStream);
+        identity.sha256 = hash.digest('hex');
         await rename(tempPath, targetPath);
-        return;
+        return { identity };
       } catch (error) {
         if (!isRetryableNetworkError(error) || attempt === maxAttempts) {
           throw error;
@@ -300,7 +328,7 @@ export async function downloadFmcsaFiles(options: {
 
     if (!options.force && await rawFileExists(fileRef, s3Client)) {
       console.log('Skipped: already exists');
-      results.push({ datasetKey, datasetName, fileRef, skipped: true, failed: false });
+      results.push({ datasetKey, datasetName, fileRef, skippedReason: 'already_exists', skipped: true, failed: false });
       continue;
     }
 
@@ -311,25 +339,67 @@ export async function downloadFmcsaFiles(options: {
           : buildFmcsaSodaExportUrl(dataset.datasetId);
       const headers = socrataAppToken ? { 'X-App-Token': socrataAppToken } : undefined;
 
-      await downloadToFile(downloadUrl, targetPath, {
+      const download = await downloadToFile(downloadUrl, targetPath, {
         headers,
         datasetName,
         source: options.downloadMode,
       });
+      if (options.downloadMode === 'diff' && !options.force) {
+        const processedRef = buildProcessedFileIdentityRef(storage, options.downloadMode, datasetKey, download.identity);
+        if (await processedFileIdentityExists(processedRef, storage, s3Client)) {
+          await rm(targetPath, { force: true });
+          console.log(`Skipped: already processed file identity (${processedRef.identityKey})`);
+          results.push({
+            datasetKey,
+            datasetName,
+            fileRef,
+            downloadIdentity: download.identity,
+            skippedReason: 'already_processed',
+            skipped: true,
+            failed: false,
+          });
+          continue;
+        }
+      }
       if (fileRef.s3Key) {
         await uploadRawFileToS3(targetPath, fileRef, s3Client);
         await rm(targetPath, { force: true });
       }
       console.log(`Saved: ${fileRef.displayPath}`);
-      results.push({ datasetKey, datasetName, fileRef, skipped: false, failed: false });
+      results.push({ datasetKey, datasetName, fileRef, downloadIdentity: download.identity, skipped: false, failed: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (options.downloadMode === 'diff' && error instanceof DownloadHttpError && error.status === 404) {
+        console.log('Skipped: daily diff file not published yet (HTTP 404)');
+        results.push({
+          datasetKey,
+          datasetName,
+          fileRef,
+          skippedReason: 'not_published',
+          skipped: true,
+          failed: false,
+          error: message,
+        });
+        continue;
+      }
+
       console.error(`Failed: ${message}`);
       results.push({ datasetKey, datasetName, fileRef, skipped: false, failed: true, error: message });
     }
   }
 
   return results;
+}
+
+function getResponseIdentity(response: Response): FmcsaDownloadFileIdentity {
+  const contentLength = response.headers.get('content-length');
+  const parsedContentLength = contentLength === null ? undefined : Number(contentLength);
+
+  return {
+    etag: response.headers.get('etag') ?? undefined,
+    lastModified: response.headers.get('last-modified') ?? undefined,
+    contentLength: Number.isFinite(parsedContentLength) ? parsedContentLength : undefined,
+  };
 }
 
 async function run(): Promise<void> {

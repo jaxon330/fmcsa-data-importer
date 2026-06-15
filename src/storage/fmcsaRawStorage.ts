@@ -1,7 +1,8 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import type { FmcsaDownloadMode } from '../config/fmcsaDatasets';
+import type { FmcsaDatasetKey, FmcsaDownloadMode } from '../config/fmcsaDatasets';
 
 export type FmcsaStorageType = 'local' | 's3';
 
@@ -24,6 +25,22 @@ export interface FmcsaRawFileRef {
 export interface FmcsaFileValidation {
   exists: boolean;
   sizeBytes: number;
+}
+
+export interface FmcsaDownloadFileIdentity {
+  etag?: string;
+  lastModified?: string;
+  contentLength?: number;
+  sha256?: string;
+}
+
+export interface FmcsaProcessedFileIdentityRef {
+  source: FmcsaDownloadMode;
+  datasetKey: FmcsaDatasetKey;
+  identityKey: string;
+  localPath?: string;
+  s3Key?: string;
+  displayPath: string;
 }
 
 const DEFAULT_STORAGE_TYPE = 'local';
@@ -79,6 +96,36 @@ export function buildFmcsaRawFileRef(
   };
 }
 
+export function buildProcessedFileIdentityRef(
+  storage: FmcsaRawStorageConfig,
+  source: FmcsaDownloadMode,
+  datasetKey: FmcsaDatasetKey,
+  identity: FmcsaDownloadFileIdentity,
+): FmcsaProcessedFileIdentityRef {
+  const identityKey = createProcessedFileIdentityKey(source, datasetKey, identity);
+  const filename = `${identityKey}.json`;
+
+  if (storage.storageType === 's3') {
+    const s3Key = [storage.s3Prefix, source, '_processed', datasetKey, filename].filter(Boolean).join('/');
+    return {
+      source,
+      datasetKey,
+      identityKey,
+      s3Key,
+      displayPath: `s3://${storage.s3BucketName}/${s3Key}`,
+    };
+  }
+
+  const localPath = path.join(getFmcsaRawDir(storage, source), '_processed', datasetKey, filename);
+  return {
+    source,
+    datasetKey,
+    identityKey,
+    localPath,
+    displayPath: toDisplayPath(localPath),
+  };
+}
+
 export function getFmcsaRawDir(storage: FmcsaRawStorageConfig, source: FmcsaDownloadMode): string {
   const rawDataDir = path.resolve(process.cwd(), storage.localRawDataDir);
   return path.basename(rawDataDir) === source ? rawDataDir : path.join(rawDataDir, source);
@@ -87,6 +134,42 @@ export function getFmcsaRawDir(storage: FmcsaRawStorageConfig, source: FmcsaDown
 export async function rawFileExists(ref: FmcsaRawFileRef, s3Client = new S3Client({})): Promise<boolean> {
   const validation = await validateRawFile(ref, s3Client);
   return validation.exists;
+}
+
+export async function processedFileIdentityExists(
+  ref: FmcsaProcessedFileIdentityRef,
+  storage: FmcsaRawStorageConfig,
+  s3Client = new S3Client({}),
+): Promise<boolean> {
+  if (ref.localPath) {
+    try {
+      const stats = await fs.promises.stat(ref.localPath);
+      return stats.isFile();
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  if (!ref.s3Key) {
+    throw new Error(`Processed file identity reference is missing a local path or S3 key: ${ref.displayPath}`);
+  }
+
+  if (!storage.s3BucketName) {
+    throw new Error('FMCSA_S3_BUCKET_NAME is required for S3 processed file identity checks.');
+  }
+
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: storage.s3BucketName, Key: ref.s3Key }));
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function validateRawFile(ref: FmcsaRawFileRef, s3Client = new S3Client({})): Promise<FmcsaFileValidation> {
@@ -137,6 +220,44 @@ export async function uploadRawFileToS3(
   );
 }
 
+export async function markProcessedFileIdentity(
+  ref: FmcsaProcessedFileIdentityRef,
+  storage: FmcsaRawStorageConfig,
+  metadata: Record<string, unknown>,
+  s3Client = new S3Client({}),
+): Promise<void> {
+  const body = JSON.stringify({
+    ...metadata,
+    source: ref.source,
+    datasetKey: ref.datasetKey,
+    identityKey: ref.identityKey,
+    processedAt: new Date().toISOString(),
+  }, null, 2);
+
+  if (ref.localPath) {
+    await fs.promises.mkdir(path.dirname(ref.localPath), { recursive: true });
+    await fs.promises.writeFile(ref.localPath, body);
+    return;
+  }
+
+  if (!ref.s3Key) {
+    throw new Error(`Processed file identity reference is missing a local path or S3 key: ${ref.displayPath}`);
+  }
+
+  if (!storage.s3BucketName) {
+    throw new Error('FMCSA_S3_BUCKET_NAME is required for S3 processed file identity markers.');
+  }
+
+  await s3Client.send(
+    new PutObjectCommand({
+      Bucket: storage.s3BucketName,
+      Key: ref.s3Key,
+      Body: body,
+      ContentType: 'application/json',
+    }),
+  );
+}
+
 export function toDisplayPath(filePath: string): string {
   const relativePath = path.relative(process.cwd(), filePath);
   if (!relativePath || relativePath.startsWith('..')) {
@@ -158,6 +279,27 @@ function parseBucketFromS3Url(inputSource: string): string {
   }
 
   return withoutScheme.slice(0, slashIndex);
+}
+
+function createProcessedFileIdentityKey(
+  source: FmcsaDownloadMode,
+  datasetKey: FmcsaDatasetKey,
+  identity: FmcsaDownloadFileIdentity,
+): string {
+  const stableIdentity = {
+    source,
+    datasetKey,
+    etag: normalizeIdentityValue(identity.etag),
+    lastModified: normalizeIdentityValue(identity.lastModified),
+    contentLength: identity.contentLength,
+    sha256: normalizeIdentityValue(identity.sha256),
+  };
+
+  return crypto.createHash('sha256').update(JSON.stringify(stableIdentity)).digest('hex');
+}
+
+function normalizeIdentityValue(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
 }
 
 function isNotFoundError(error: unknown): boolean {

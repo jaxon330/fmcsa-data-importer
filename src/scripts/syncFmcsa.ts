@@ -19,9 +19,12 @@ import {
 } from '../importers/fmcsaDataImporter';
 import { downloadFmcsaFiles, type DownloadResult } from './downloadFmcsaFiles';
 import {
+  buildProcessedFileIdentityRef,
   buildFmcsaRawFileRef,
   getFmcsaRawStorageConfig,
+  markProcessedFileIdentity,
   validateRawFile,
+  type FmcsaDownloadFileIdentity,
   type FmcsaFileValidation,
   type FmcsaRawFileRef,
 } from '../storage/fmcsaRawStorage';
@@ -41,9 +44,12 @@ interface DatasetSyncSummary {
   datasetType: DatasetType;
   fileRef?: FmcsaRawFileRef;
   download?: DownloadResult;
+  downloadIdentity?: FmcsaDownloadFileIdentity;
   validation?: FmcsaFileValidation;
   importStats?: ImportStats;
   dryRunRowsPreviewed?: number;
+  skipped: boolean;
+  skippedReason?: DownloadResult['skippedReason'];
   failed: boolean;
   failedStep?: 'download' | 'validate' | 'import';
   error?: string;
@@ -117,6 +123,7 @@ async function run(): Promise<void> {
     summaries.set(datasetKey, {
       datasetKey,
       datasetType: datasetKeyToName(datasetKey) as DatasetType,
+      skipped: false,
       failed: false,
     });
   }
@@ -145,6 +152,12 @@ async function run(): Promise<void> {
 
     summary.download = result;
     summary.fileRef = result.fileRef;
+    summary.downloadIdentity = result.downloadIdentity;
+    if (result.skipped) {
+      summary.skipped = true;
+      summary.skippedReason = result.skippedReason;
+      summary.error = result.error;
+    }
     if (result.failed) {
       summary.failed = true;
       summary.failedStep = 'download';
@@ -161,7 +174,7 @@ async function run(): Promise<void> {
   console.log('Validating files...');
   for (const datasetKey of args.datasets) {
     const summary = summaries.get(datasetKey);
-    if (!summary || summary.failed) {
+    if (!summary || summary.failed || summary.skipped) {
       continue;
     }
 
@@ -201,7 +214,7 @@ async function run(): Promise<void> {
   try {
     for (const datasetKey of args.datasets) {
       const summary = summaries.get(datasetKey);
-      if (!summary || summary.failed) {
+      if (!summary || summary.failed || summary.skipped) {
         continue;
       }
 
@@ -243,6 +256,22 @@ async function run(): Promise<void> {
         console.log(`rows read: ${stats.rowsRead}`);
         console.log(`rows inserted/updated: ${stats.rowsInsertedOrUpdated}`);
         console.log(`rows failed: ${stats.rowsFailed}`);
+
+        if (summary.downloadIdentity) {
+          const processedRef = buildProcessedFileIdentityRef(
+            storage,
+            args.source,
+            datasetKey,
+            summary.downloadIdentity,
+          );
+          await markProcessedFileIdentity(processedRef, storage, {
+            datasetType: summary.datasetType,
+            file: summary.fileRef.displayPath,
+            identity: summary.downloadIdentity,
+            importStats: stats,
+          }, s3Client);
+          console.log(`processed identity recorded: ${processedRef.identityKey}`);
+        }
       } catch (error) {
         summary.failed = true;
         summary.failedStep = 'import';
@@ -278,7 +307,11 @@ function printFinalSummary(summaries: DatasetSyncSummary[]): void {
   for (const summary of summaries) {
     const validation = summary.validation;
     const stats = summary.importStats;
-    const status = summary.failed ? `failed at ${summary.failedStep}` : 'succeeded';
+    const status = summary.failed
+      ? `failed at ${summary.failedStep}`
+      : summary.skipped
+        ? `skipped (${formatSkippedReason(summary.skippedReason)})`
+        : 'succeeded';
     console.log(
       [
         `${summary.datasetType}: ${status}`,
@@ -290,6 +323,19 @@ function printFinalSummary(summaries: DatasetSyncSummary[]): void {
       ].join(', '),
     );
   }
+}
+
+function formatSkippedReason(reason: DownloadResult['skippedReason']): string {
+  if (reason === 'not_published') {
+    return 'daily diff not published yet';
+  }
+  if (reason === 'already_processed') {
+    return 'already processed file identity';
+  }
+  if (reason === 'already_exists') {
+    return 'raw file already exists';
+  }
+  return 'not downloaded';
 }
 
 function buildFilename(filePrefix: string, extension: string, date: Date): string {
