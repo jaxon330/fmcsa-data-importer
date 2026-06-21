@@ -233,7 +233,9 @@ describe('FMCSA data importer', () => {
         lastModified: 'Sun, 14 Jun 2026 10:00:00 GMT',
         contentLength: body.length,
       });
-      expect(fs.existsSync(path.join(dir, 'motusAllHist', 'motus_carrier_all_with_history_2026_06_14.csv'))).toBe(true);
+      const savedPath = path.join(dir, 'motusAllHist', 'motus_carrier_all_with_history_2026_06_14.csv');
+      expect(fs.existsSync(savedPath)).toBe(true);
+      expect(fs.readFileSync(savedPath, 'utf8')).toBe(body);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -306,7 +308,50 @@ describe('FMCSA data importer', () => {
         skipped: false,
         failed: false,
       }));
-      expect(fs.existsSync(path.join(dir, 'motusDiff', 'motus_carrier_2026_06_15.csv'))).toBe(true);
+      const savedPath = path.join(dir, 'motusDiff', 'motus_carrier_2026_06_15.csv');
+      expect(fs.existsSync(savedPath)).toBe(true);
+      expect(fs.readFileSync(savedPath, 'utf8')).toBe(body);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps legacy daily difference assets as unchanged .txt files', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmcsa-legacy-diff-download-'));
+    const body = '"MC000675","00124159"," ","","I","I","N"\n';
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(Readable.toWeb(Readable.from([body])) as BodyInit, {
+        headers: {
+          ETag: '"legacy-carrier-diff-etag"',
+          'Content-Length': String(body.length),
+        },
+      }),
+    );
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    process.env = { ...originalEnv, FMCSA_STORAGE_TYPE: 'local' };
+
+    try {
+      const results = await downloadFmcsaFiles({
+        provider: 'legacy',
+        downloadMode: 'diff',
+        datasetKeys: ['carrier'],
+        dir,
+        date: new Date('2026-06-15T12:00:00Z'),
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://data.transportation.gov/download/6qg9-x4f8/application/octet-stream',
+        expect.any(Object),
+      );
+      expect(results[0]).toEqual(expect.objectContaining({
+        datasetKey: 'carrier',
+        skipped: false,
+        failed: false,
+      }));
+      const savedPath = path.join(dir, 'diff', 'carrier_2026_06_15.txt');
+      expect(fs.existsSync(savedPath)).toBe(true);
+      expect(fs.readFileSync(savedPath, 'utf8')).toBe(body);
+      expect(fs.existsSync(path.join(dir, 'diff', 'carrier_2026_06_15.csv'))).toBe(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
