@@ -83,6 +83,12 @@ npm run download:fmcsa -- --download diff --force
 All-history CSV exports use the Socrata v3 export API. Set `FMCSA_SOCRATA_APP_TOKEN`
 or `SOCRATA_APP_TOKEN` if DOT requires request identification for CSV export.
 
+Motus source handling:
+
+- Daily diff uses the Socrata `rows.csv` export and saves the response unchanged with a `.csv` extension.
+- All-history uses the normal Socrata `rows.csv` export, includes headers, and is saved with a `.csv` extension.
+- The Motus-native serving tables and local validation are documented in `docs/motus-native-implementation.md`.
+
 Output:
 
 ```text

@@ -39,7 +39,8 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - AWS/dev migration `002_create_fmcsa_raw_imports.sql` is blocked with `permission denied for schema public` when using the current `fmcsa-importer-dev/database-url` secret. A DB owner/admin migration credential is required before live Motus sync.
    - Manual Motus carrier dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/599c689a8921476f985e51f982cf50f7`
    - Manual Motus carrier dry-run command: `npm run sync:fmcsa -- --provider motus --source diff --dry-run --datasets carrier`
-   - Manual Motus carrier dry-run result: passed with exit code 0 on revision 6. Logs showed `storage: s3`, wrote `s3://fmcsa-importer-dataset-dev/fmcsa/dataset/motusDiff/motus_carrier_2026_06_15.txt`, validated size `29362`, previewed 3 rows, and imported 0 rows.
+   - Manual Motus carrier dry-run result: passed with exit code 0 on revision 6. Logs showed `storage: s3`, wrote `s3://fmcsa-importer-dataset-dev/fmcsa/dataset/motusDiff/motus_carrier_2026_06_15.csv`, validated size `29362`, previewed 3 rows, and imported 0 rows.
+   - Motus daily diff and the corrected Motus all-history datasets use Socrata `rows.csv`, preserve headers, and save as `.csv`. The Motus-native implementation remains local only; AWS and scheduler configuration were not changed.
    - Manual dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/4f9db872e5c343e6bcdbfff6ba8d667b`
    - Manual dry-run command: `npm run sync:fmcsa -- --dry-run --source diff --datasets carrier`
    - Manual dry-run result: passed with exit code 0. FMCSA returned HTTP 404 for the carrier daily diff, and the importer skipped it as not published yet.

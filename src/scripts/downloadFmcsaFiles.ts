@@ -12,7 +12,6 @@ import {
   buildFmcsaDownloadUrl,
   buildFmcsaSodaExportUrl,
   buildMotusRowsCsvDownloadUrl,
-  buildMotusTextDownloadUrl,
   datasetKeyToName,
   FMCSA_DATASETS,
   MOTUS_DATASETS,
@@ -363,7 +362,8 @@ export async function downloadFmcsaFiles(options: {
 
     console.log(`Downloading ${datasetName}...`);
 
-    if (!options.force && await rawFileExists(fileRef, s3Client)) {
+    const existingRawFile = !options.force && await rawFileExists(fileRef, s3Client);
+    if (existingRawFile && provider !== 'motus') {
       console.log('Skipped: already exists');
       results.push({ datasetKey, datasetName, fileRef, skippedReason: 'already_exists', skipped: true, failed: false });
       continue;
@@ -372,9 +372,7 @@ export async function downloadFmcsaFiles(options: {
     try {
       const downloadUrl =
         provider === 'motus'
-          ? options.downloadMode === 'diff'
-            ? buildMotusRowsCsvDownloadUrl(dataset.datasetId)
-            : buildMotusTextDownloadUrl(dataset.datasetId)
+          ? buildMotusRowsCsvDownloadUrl(dataset.datasetId)
           : options.downloadMode === 'diff'
           ? buildFmcsaDownloadUrl(dataset.datasetId)
           : buildFmcsaSodaExportUrl(dataset.datasetId);
@@ -388,7 +386,9 @@ export async function downloadFmcsaFiles(options: {
       if ((provider === 'motus' || options.downloadMode === 'diff') && !options.force) {
         const processedRef = buildProcessedFileIdentityRef(storage, rawSource, datasetKey, download.identity);
         if (await processedFileIdentityExists(processedRef, storage, s3Client)) {
-          await rm(targetPath, { force: true });
+          if (!existingRawFile) {
+            await rm(targetPath, { force: true });
+          }
           console.log(`Skipped: already processed file identity (${processedRef.identityKey})`);
           results.push({
             datasetKey,
