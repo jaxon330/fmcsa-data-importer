@@ -129,59 +129,59 @@ export const MOTUS_DATASETS = {
     carrier: {
       datasetId: 'nakq-58th',
       filePrefix: 'motus_carrier',
-      extension: 'txt',
+      extension: 'csv',
     },
     activeInsurance: {
       datasetId: 'x96h-evps',
       filePrefix: 'motus_actpendins',
-      extension: 'txt',
+      extension: 'csv',
     },
     insuranceHistory: {
       datasetId: 'xe5s-wca7',
       filePrefix: 'motus_inshist',
-      extension: 'txt',
+      extension: 'csv',
     },
     revocation: {
       datasetId: 'e67p-xyd5',
       filePrefix: 'motus_revocation',
-      extension: 'txt',
+      extension: 'csv',
     },
     authorityHistory: {
       datasetId: 'dm5j-zc6c',
       filePrefix: 'motus_authhist',
-      extension: 'txt',
+      extension: 'csv',
     },
   },
   allHist: {
     carrier: {
-      datasetId: 'u4i8-4m26',
+      datasetId: 'inys-ebih',
       filePrefix: 'motus_carrier_all_with_history',
-      extension: 'txt',
+      extension: 'csv',
     },
     activeInsurance: {
-      datasetId: 'y77m-3nfx',
+      datasetId: 'c5y8-a4uz',
       filePrefix: 'motus_active_pending_insurance_all_with_history',
-      extension: 'txt',
+      extension: 'csv',
     },
     insurance: {
-      datasetId: 'xkn3-5fci',
+      datasetId: 'c5y8-a4uz',
       filePrefix: 'motus_insurance_all_with_history',
-      extension: 'txt',
+      extension: 'csv',
     },
     insuranceHistory: {
-      datasetId: 'nzpz-e5xn',
+      datasetId: '3uet-3z4i',
       filePrefix: 'motus_insurance_history_all_with_history',
-      extension: 'txt',
+      extension: 'csv',
     },
     revocation: {
-      datasetId: 'rwr4-5nkg',
+      datasetId: 'wb4f-neki',
       filePrefix: 'motus_revocation_all_with_history',
-      extension: 'txt',
+      extension: 'csv',
     },
     authorityHistory: {
-      datasetId: 'wahn-z3rq',
+      datasetId: 'yu5v-wbh6',
       filePrefix: 'motus_authority_history_all_with_history',
-      extension: 'txt',
+      extension: 'csv',
     },
   },
 } as const satisfies {
@@ -231,10 +231,6 @@ export function buildFmcsaSodaExportUrl(datasetId: string): string {
   url.searchParams.set('accessType', 'DOWNLOAD');
 
   return url.toString();
-}
-
-export function buildMotusTextDownloadUrl(datasetId: string): string {
-  return `https://data.transportation.gov/download/${datasetId}/text/plain`;
 }
 
 export function buildMotusRowsCsvDownloadUrl(datasetId: string): string {

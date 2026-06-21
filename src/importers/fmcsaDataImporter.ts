@@ -20,12 +20,14 @@ export type FmcsaSourceFormat = 'diff' | 'allHist' | 'motusDiff' | 'motusAllHist
 export interface DatasetConfig {
   datasetType: DatasetType;
   tableName: string;
+  currentTableName: string;
   sourceColumns: readonly string[];
   sourceAliases?: Readonly<Record<string, readonly string[]>>;
   insertColumns: readonly string[];
   conflictColumns: readonly string[];
   dateColumns: readonly string[];
   requiredColumns: readonly string[];
+  canonicalColumns: readonly string[];
   derive?: (row: Record<string, unknown>) => Record<string, unknown>;
 }
 
@@ -71,6 +73,13 @@ interface SourceLayout {
 }
 
 const COMMON_COLUMNS = ['source_record_hash', 'raw_record', 'imported_at', 'updated_at'] as const;
+const CURRENT_SOURCE_COLUMNS = [
+  'canonical_key',
+  'source_provider',
+  'source_priority',
+  'last_legacy_seen_at',
+  'last_motus_seen_at',
+] as const;
 
 const AUTHORITY_HISTORY_DERIVED_COLUMNS = [
   'is_broker_authority',
@@ -277,6 +286,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
   carrier: {
     datasetType: 'carrier',
     tableName: 'fmcsa_carriers',
+    currentTableName: 'fmcsa_current_carriers',
     sourceColumns: [
       'docket_number',
       'dot_number',
@@ -358,10 +368,12 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     conflictColumns: ['source_record_hash'],
     dateColumns: [],
     requiredColumns: ['docket_number', 'dot_number'],
+    canonicalColumns: ['docket_number', 'dot_number'],
   },
   'active-insurance': {
     datasetType: 'active-insurance',
     tableName: 'fmcsa_active_pending_insurance',
+    currentTableName: 'fmcsa_current_active_pending_insurance',
     sourceColumns: [
       'docket_number',
       'dot_number',
@@ -375,7 +387,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     ],
     sourceAliases: {
       dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
-      insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'mod_col_1'],
+      insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'ins_type_code', 'mod_col_1'],
       insurance_company_name: ['insurance_company_name', 'name_company'],
       posted_date: ['posted_date', 'trans_date'],
       cancel_effective_date: ['cancel_effective_date', 'cancl_effective_date'],
@@ -395,10 +407,12 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     conflictColumns: ['source_record_hash'],
     dateColumns: ['posted_date', 'effective_date', 'cancel_effective_date'],
     requiredColumns: ['docket_number', 'dot_number'],
+    canonicalColumns: ['docket_number', 'dot_number', 'ins_form_code', 'policy_no', 'effective_date'],
   },
   'insurance-history': {
     datasetType: 'insurance-history',
     tableName: 'fmcsa_insurance_history',
+    currentTableName: 'fmcsa_current_insurance_history',
     sourceColumns: [
       'docket_number',
       'dot_number',
@@ -413,7 +427,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     ],
     sourceAliases: {
       dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
-      cancellation_method: ['cancellation_method', 'cancl_method_gen', 'mod_col_1'],
+      cancellation_method: ['cancellation_method', 'filing_status_reason', 'cancl_method_gen', 'mod_col_1'],
       ins_form_code: ['ins_form_code'],
       insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'mod_col_3'],
       cancel_effective_date: ['cancel_effective_date', 'cancl_effective_date'],
@@ -436,10 +450,19 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     conflictColumns: ['source_record_hash'],
     dateColumns: ['effective_date', 'cancel_effective_date'],
     requiredColumns: ['docket_number', 'dot_number'],
+    canonicalColumns: [
+      'docket_number',
+      'dot_number',
+      'ins_form_code',
+      'policy_no',
+      'effective_date',
+      'cancel_effective_date',
+    ],
   },
   revocation: {
     datasetType: 'revocation',
     tableName: 'fmcsa_revocations',
+    currentTableName: 'fmcsa_current_revocations',
     sourceColumns: [
       'docket_number',
       'dot_number',
@@ -467,10 +490,12 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     conflictColumns: ['source_record_hash'],
     dateColumns: ['serve_date', 'effective_date'],
     requiredColumns: ['docket_number', 'dot_number'],
+    canonicalColumns: ['docket_number', 'dot_number', 'authority_type', 'effective_date'],
   },
   'authority-history': {
     datasetType: 'authority-history',
     tableName: 'fmcsa_authority_history',
+    currentTableName: 'fmcsa_current_authority_history',
     sourceColumns: [
       'docket_number',
       'dot_number',
@@ -507,6 +532,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
     conflictColumns: ['source_record_hash'],
     dateColumns: ['original_action_date', 'final_decision_date', 'final_served_date'],
     requiredColumns: ['docket_number', 'dot_number'],
+    canonicalColumns: ['docket_number', 'dot_number', 'authority_type', 'final_action', 'final_decision_date'],
     derive: deriveAuthorityHistoryFlags,
   },
 };
@@ -574,14 +600,21 @@ export function parseFmcsaDate(value: string | undefined): string | null {
     return null;
   }
 
+  const compactMatch = /^(\d{4})(\d{2})(\d{2})$/.exec(normalized);
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(normalized);
   const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(normalized);
+  if (compactMatch || isoMatch) {
+    const dateMatch = compactMatch ?? isoMatch as RegExpExecArray;
+    return validateAndFormatDate(Number(dateMatch[1]), Number(dateMatch[2]), Number(dateMatch[3]));
+  }
   if (!match) {
     return null;
   }
 
-  const month = Number(match[1]);
-  const day = Number(match[2]);
-  const year = Number(match[3]);
+  return validateAndFormatDate(Number(match[3]), Number(match[1]), Number(match[2]));
+}
+
+function validateAndFormatDate(year: number, month: number, day: number): string | null {
   const date = new Date(Date.UTC(year, month - 1, day));
 
   if (
@@ -716,6 +749,13 @@ export function mapDatasetRow(
 
   const row: Record<string, unknown> = {};
 
+  if (datasetType === 'carrier' && isMotusSource(sourceFormat) && headers) {
+    const authorityType = getHeaderValue(fields, headers, 'op_auth_type');
+    if (!isMotusBrokerAuthority(authorityType)) {
+      return null;
+    }
+  }
+
   for (const column of config.sourceColumns) {
     const sourceValue = getSourceValue(config, column, fields, headerIndex, layout);
 
@@ -734,6 +774,10 @@ export function mapDatasetRow(
     Object.assign(row, deriveMotusCarrierAuthorityFields(rawRecord));
   }
 
+  if (datasetType === 'active-insurance' && isMotusSource(sourceFormat)) {
+    row.cancel_effective_date = null;
+  }
+
   for (const requiredColumn of config.requiredColumns) {
     if (!row[requiredColumn]) {
       return null;
@@ -745,6 +789,13 @@ export function mapDatasetRow(
   row.source_record_hash = createSourceRecordHash(rawRecord);
   row.imported_at = new Date();
   row.updated_at = new Date();
+  if (isMotusSource(sourceFormat)) {
+    row.canonical_key = createCanonicalKey(config, row);
+    row.source_provider = 'motus';
+    row.source_priority = 100;
+    row.last_legacy_seen_at = null;
+    row.last_motus_seen_at = new Date();
+  }
 
   return row;
 }
@@ -769,15 +820,25 @@ export function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function buildUpsertBatch(datasetType: DatasetType, rows: Array<Record<string, unknown>>): InsertBatch {
+export function buildUpsertBatch(
+  datasetType: DatasetType,
+  rows: Array<Record<string, unknown>>,
+  sourceFormat: FmcsaSourceFormat = 'allHist',
+): InsertBatch {
   if (rows.length === 0) {
     throw new Error('Cannot build an upsert batch with zero rows.');
   }
 
   const config = DATASET_CONFIGS[datasetType];
+  const isCurrentServingImport = isMotusSource(sourceFormat);
+  const tableName = isCurrentServingImport ? config.currentTableName : config.tableName;
+  const insertColumns = isCurrentServingImport
+    ? [...config.insertColumns, ...CURRENT_SOURCE_COLUMNS]
+    : config.insertColumns;
+  const conflictColumns = isCurrentServingImport ? ['canonical_key'] : config.conflictColumns;
   const values: unknown[] = [];
   const tuples = rows.map((row) => {
-    const placeholders = config.insertColumns.map((column) => {
+    const placeholders = insertColumns.map((column) => {
       const value = column === 'raw_record' ? JSON.stringify(row[column]) : row[column];
       values.push(value);
       const placeholder = `$${values.length}`;
@@ -789,10 +850,10 @@ export function buildUpsertBatch(datasetType: DatasetType, rows: Array<Record<st
 
   return {
     text: `
-      INSERT INTO ${config.tableName} (${config.insertColumns.join(', ')})
+      INSERT INTO ${tableName} (${insertColumns.join(', ')})
       VALUES ${tuples.join(', ')}
-      ON CONFLICT (${config.conflictColumns.join(', ')})
-      DO NOTHING
+      ON CONFLICT (${conflictColumns.join(', ')})
+      ${isCurrentServingImport ? buildCurrentServingUpdateClause(config, sourceFormat) : 'DO NOTHING'}
     `,
     values,
   };
@@ -853,9 +914,9 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
       return;
     }
 
-    const rowsToFlush = dedupeRowsByConflictKey(options.datasetType, pendingRows.splice(0));
+    const rowsToFlush = dedupeRowsByConflictKey(options.datasetType, pendingRows.splice(0), sourceFormat);
     const rowCountFallback = rowsToFlush.length;
-    const batch = buildUpsertBatch(options.datasetType, rowsToFlush);
+    const batch = buildUpsertBatch(options.datasetType, rowsToFlush, sourceFormat);
     const result = await options.pool.query(batch.text, batch.values);
     stats.rowsInsertedOrUpdated += typeof result.rowCount === 'number' ? result.rowCount : rowCountFallback;
     stats.batches += 1;
@@ -867,6 +928,9 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
       if (isHeaderedSource(sourceFormat) && isHeaderRow(options.datasetType, fields)) {
         headers = fields.map((field) => field.trim());
         continue;
+      }
+      if (isMotusSource(sourceFormat)) {
+        throw new Error(`Expected a header row for ${options.datasetType} ${sourceFormat}`);
       }
       validateColumnCount(options.datasetType, sourceFormat, fields.length);
     } else if (!headers && isFixedLayoutSource(sourceFormat)) {
@@ -880,6 +944,11 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
         if (progressEvery > 0 && stats.rowsRead % progressEvery === 0) {
           logImportProgress(stats, startedAt);
         }
+        continue;
+      }
+
+      if (shouldSkipMotusCarrierRow(options.datasetType, sourceFormat, fields, headers)) {
+        stats.rowsSkipped += 1;
         continue;
       }
 
@@ -946,6 +1015,9 @@ export async function previewFmcsaDataset(options: {
         headers = fields.map((field) => field.trim());
         continue;
       }
+      if (isMotusSource(options.sourceFormat)) {
+        throw new Error(`Expected a header row for ${options.datasetType} ${options.sourceFormat}`);
+      }
       validateColumnCount(options.datasetType, options.sourceFormat, fields.length);
     } else if (!headers && isFixedLayoutSource(options.sourceFormat)) {
       validateColumnCount(options.datasetType, options.sourceFormat, fields.length);
@@ -985,7 +1057,8 @@ function deriveAuthorityHistoryFlags(row: Record<string, unknown>): Record<strin
     is_carrier_authority:
       authorityTypeUpper.includes('COMMON') ||
       authorityTypeUpper.includes('CONTRACT') ||
-      authorityTypeUpper.includes('MOTOR PROPERTY'),
+      authorityTypeUpper.includes('MOTOR PROPERTY') ||
+      authorityTypeUpper.includes('MOTOR CARRIER'),
     is_negative_final_action: hasNegativeFinalAction && !isDiscontinuedRevocation,
     is_revoked:
       !isDiscontinuedRevocation &&
@@ -1001,11 +1074,9 @@ function deriveMotusCarrierAuthorityFields(rawRecord: Record<string, string | nu
   const isPending = String(rawRecord.op_auth_status ?? '').toUpperCase().includes('PENDING');
   const derived: Record<string, unknown> = {};
 
-  if (authorityType.includes('BROKER')) {
+  if (isMotusBrokerAuthority(authorityType)) {
     derived.broker_stat = authorityStatus;
-    if (isPending) {
-      derived.broker_app_pend = 'Y';
-    }
+    derived.broker_app_pend = isPending ? 'Y' : 'N';
   } else if (authorityType.includes('CONTRACT')) {
     derived.contract_stat = authorityStatus;
   } else if (authorityType.includes('COMMON') || authorityType.includes('MOTOR CARRIER')) {
@@ -1028,8 +1099,82 @@ function normalizeMotusAuthorityStatus(value: string | null | undefined): string
   if (upper === 'INACTIVE') {
     return 'I';
   }
+  if (upper === 'PENDING') {
+    return 'P';
+  }
+  if (upper === 'WITHDRAWN') {
+    return 'W';
+  }
 
-  return normalized;
+  return upper;
+}
+
+function isMotusSource(sourceFormat: FmcsaSourceFormat): boolean {
+  return sourceFormat === 'motusDiff' || sourceFormat === 'motusAllHist';
+}
+
+function isMotusBrokerAuthority(value: string | null | undefined): boolean {
+  const normalized = String(value ?? '').toUpperCase();
+  return normalized === 'BROKER OF PROPERTY (EXCEPT HOUSEHOLD GOODS)'
+    || normalized === 'BROKER OF HOUSEHOLD GOODS'
+    || normalized === 'PROPERTY BROKER'
+    || normalized === 'HOUSEHOLD GOODS BROKER'
+    || normalized === 'BROKER';
+}
+
+function getHeaderValue(fields: string[], headers: string[], headerName: string): string | undefined {
+  const index = headers.findIndex((header) => normalizeHeaderName(header) === headerName);
+  return index === -1 ? undefined : fields[index];
+}
+
+function shouldSkipMotusCarrierRow(
+  datasetType: DatasetType,
+  sourceFormat: FmcsaSourceFormat,
+  fields: string[],
+  headers: string[] | undefined,
+): boolean {
+  return datasetType === 'carrier'
+    && isMotusSource(sourceFormat)
+    && Boolean(headers)
+    && !isMotusBrokerAuthority(getHeaderValue(fields, headers as string[], 'op_auth_type'));
+}
+
+function createCanonicalKey(config: DatasetConfig, row: Record<string, unknown>): string {
+  return config.canonicalColumns
+    .map((column) => String(row[column] ?? '').trim().toUpperCase())
+    .join('|');
+}
+
+function buildCurrentServingUpdateClause(config: DatasetConfig, sourceFormat: FmcsaSourceFormat): string {
+  const mutableColumns = config.insertColumns.filter((column) => column !== 'imported_at' && column !== 'updated_at');
+  const assignments = [
+    ...mutableColumns.map((column) => {
+      if (config.datasetType === 'carrier' && (column === 'common_stat' || column === 'contract_stat')) {
+        return `${column} = COALESCE(EXCLUDED.${column}, ${config.currentTableName}.${column})`;
+      }
+      if (config.datasetType === 'carrier' && sourceFormat === 'motusAllHist' && column === 'broker_stat') {
+        return `broker_stat = CASE
+          WHEN ${motusBrokerStatusRank('EXCLUDED.broker_stat')} >= ${motusBrokerStatusRank(`${config.currentTableName}.broker_stat`)}
+          THEN EXCLUDED.broker_stat
+          ELSE ${config.currentTableName}.broker_stat
+        END`;
+      }
+      return `${column} = EXCLUDED.${column}`;
+    }),
+    'source_provider = EXCLUDED.source_provider',
+    'source_priority = EXCLUDED.source_priority',
+    'last_motus_seen_at = EXCLUDED.last_motus_seen_at',
+    'updated_at = EXCLUDED.updated_at',
+  ];
+
+  return `
+      DO UPDATE SET ${assignments.join(', ')}
+      WHERE ${config.currentTableName}.source_priority <= EXCLUDED.source_priority
+  `;
+}
+
+function motusBrokerStatusRank(sqlExpression: string): string {
+  return `(CASE ${sqlExpression} WHEN 'A' THEN 4 WHEN 'P' THEN 3 WHEN 'I' THEN 2 WHEN 'W' THEN 1 ELSE 0 END)`;
 }
 
 function normalizeHeaderName(value: string): string {
@@ -1103,35 +1248,66 @@ function validateColumnCount(
 }
 
 function isFixedLayoutSource(sourceFormat: FmcsaSourceFormat): boolean {
-  return sourceFormat === 'diff' || sourceFormat === 'motusDiff' || sourceFormat === 'motusAllHist';
+  return sourceFormat === 'diff';
 }
 
 function isHeaderedSource(sourceFormat: FmcsaSourceFormat): boolean {
-  return sourceFormat === 'allHist' || sourceFormat === 'motusDiff';
+  return sourceFormat === 'allHist' || sourceFormat === 'motusDiff' || sourceFormat === 'motusAllHist';
 }
 
 function stripImportMetadata(row: Record<string, unknown>): Record<string, unknown> {
-  const { imported_at, updated_at, source_record_hash, raw_record, ...previewRow } = row;
+  const {
+    imported_at,
+    updated_at,
+    source_record_hash,
+    raw_record,
+    canonical_key,
+    source_provider,
+    source_priority,
+    last_legacy_seen_at,
+    last_motus_seen_at,
+    ...previewRow
+  } = row;
   void imported_at;
   void updated_at;
   void source_record_hash;
   void raw_record;
+  void canonical_key;
+  void source_provider;
+  void source_priority;
+  void last_legacy_seen_at;
+  void last_motus_seen_at;
   return previewRow;
 }
 
 function dedupeRowsByConflictKey(
   datasetType: DatasetType,
   rows: Array<Record<string, unknown>>,
+  sourceFormat: FmcsaSourceFormat = 'allHist',
 ): Array<Record<string, unknown>> {
   const config = DATASET_CONFIGS[datasetType];
+  const conflictColumns = isMotusSource(sourceFormat) ? ['canonical_key'] : config.conflictColumns;
   const rowsByKey = new Map<string, Record<string, unknown>>();
 
   for (const row of rows) {
-    const key = JSON.stringify(config.conflictColumns.map((column) => row[column] ?? null));
+    const key = JSON.stringify(conflictColumns.map((column) => row[column] ?? null));
+    const existing = rowsByKey.get(key);
+    if (
+      datasetType === 'carrier'
+      && sourceFormat === 'motusAllHist'
+      && existing
+      && brokerStatusRank(existing.broker_stat) > brokerStatusRank(row.broker_stat)
+    ) {
+      continue;
+    }
     rowsByKey.set(key, row);
   }
 
   return [...rowsByKey.values()];
+}
+
+function brokerStatusRank(value: unknown): number {
+  return { A: 4, P: 3, I: 2, W: 1 }[String(value ?? '').toUpperCase() as 'A' | 'P' | 'I' | 'W'] ?? 0;
 }
 
 function parseS3Url(inputSource: string): { bucket: string; key: string } {

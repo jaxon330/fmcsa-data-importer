@@ -22,6 +22,7 @@ import {
   type ImportStats,
 } from '../importers/fmcsaDataImporter';
 import { downloadFmcsaFiles, type DownloadResult } from './downloadFmcsaFiles';
+import { rebuildCurrentServingBaseline } from '../currentServing/currentServingTables';
 import {
   buildProcessedFileIdentityRef,
   buildFmcsaRawFileRef,
@@ -41,6 +42,7 @@ interface CliArgs {
   datasets: FmcsaDatasetKey[];
   dryRun: boolean;
   force: boolean;
+  rebuildCurrent: boolean;
   dir?: string;
 }
 
@@ -67,6 +69,7 @@ function parseArgs(args: string[]): CliArgs {
   let datasets: FmcsaDatasetKey[] | undefined;
   let dryRun = false;
   let force = false;
+  let rebuildCurrent = false;
   let dir: string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -104,6 +107,11 @@ function parseArgs(args: string[]): CliArgs {
       continue;
     }
 
+    if (arg === '--rebuild-current') {
+      rebuildCurrent = true;
+      continue;
+    }
+
     if (arg === '--dir') {
       dir = args[index + 1];
       if (!dir) {
@@ -120,12 +128,19 @@ function parseArgs(args: string[]): CliArgs {
     throw new Error('--source is required and must be either "diff" or "allHist"');
   }
 
+  if (rebuildCurrent && (provider !== 'motus' || source !== 'allHist')) {
+    throw new Error('--rebuild-current requires --provider motus --source allHist');
+  }
+
   return {
     source,
     provider,
-    datasets: datasets ?? parseFmcsaDatasetKeys(undefined, BROKER_CHECK_V1_DATASETS),
+    datasets: datasets ?? (rebuildCurrent
+      ? ['carrier', 'activeInsurance', 'insuranceHistory', 'revocation', 'authorityHistory']
+      : parseFmcsaDatasetKeys(undefined, BROKER_CHECK_V1_DATASETS)),
     dryRun,
     force,
+    rebuildCurrent,
     dir,
   };
 }
@@ -158,6 +173,7 @@ async function run(): Promise<void> {
   console.log(`datasets: ${args.datasets.map(datasetKeyToName).join(',')}`);
   console.log(`dry-run: ${args.dryRun ? 'yes' : 'no'}`);
   console.log(`force: ${args.force ? 'yes' : 'no'}`);
+  console.log(`rebuild current baseline: ${args.rebuildCurrent ? 'yes' : 'no'}`);
   console.log(`storage: ${storage.storageType}`);
   console.log('');
 
@@ -238,6 +254,13 @@ async function run(): Promise<void> {
   }
 
   try {
+    if (args.rebuildCurrent) {
+      console.log('Rebuilding current serving tables from legacy baseline...');
+      await rebuildCurrentServingBaseline(pool as Pool);
+      console.log('Legacy baseline copied');
+      console.log('');
+    }
+
     for (const datasetKey of args.datasets) {
       const summary = summaries.get(datasetKey);
       if (!summary || summary.failed || summary.skipped) {

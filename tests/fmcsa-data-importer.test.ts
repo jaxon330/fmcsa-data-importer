@@ -195,9 +195,9 @@ describe('FMCSA data importer', () => {
     });
   });
 
-  it('downloads a Motus text/plain file asset', async () => {
+  it('downloads a Motus all-history CSV export', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmcsa-motus-download-'));
-    const body = '"MC012892","02217388"," ","","N","N","I","N","N","N","N","N","N","N","N","N","N","N","00000","N","Y","00000","N","N","Y","N C BRINKE","NORMAN CHARLES BRINKE","1200 SEABOARD DR","","HIALEAH","FL","US","33010","","","","","","","","","",""\n';
+    const body = 'DOCKET_NUMBER,USDOT_NUMBER,OP_AUTH_TYPE,OP_AUTH_STATUS\nMC012892,2217388,Broker of Property (Except Household Goods),Inactive\n';
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(Readable.toWeb(Readable.from([body])) as BodyInit, {
         headers: {
@@ -220,7 +220,7 @@ describe('FMCSA data importer', () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        'https://data.transportation.gov/download/u4i8-4m26/text/plain',
+        'https://data.transportation.gov/api/views/inys-ebih/rows.csv?accessType=DOWNLOAD',
         expect.any(Object),
       );
       expect(results[0]).toEqual(expect.objectContaining({
@@ -233,17 +233,20 @@ describe('FMCSA data importer', () => {
         lastModified: 'Sun, 14 Jun 2026 10:00:00 GMT',
         contentLength: body.length,
       });
-      expect(fs.existsSync(path.join(dir, 'motusAllHist', 'motus_carrier_all_with_history_2026_06_14.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(dir, 'motusAllHist', 'motus_carrier_all_with_history_2026_06_14.csv'))).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('parses Motus all-history as headerless fixed-layout CSV', async () => {
-    const filePath = path.join(os.tmpdir(), `motus-carrier-preview-${Date.now()}.txt`);
+  it('parses Motus all-history as headered CSV', async () => {
+    const filePath = path.join(os.tmpdir(), `motus-carrier-preview-${Date.now()}.csv`);
     fs.writeFileSync(
       filePath,
-      '"MC012892","02217388"," ","","N","N","I","N","N","N","N","N","N","N","N","N","N","N","00000","N","Y","00000","N","N","Y","N C BRINKE","NORMAN CHARLES BRINKE","1200 SEABOARD DR","","HIALEAH","FL","US","33010","","","","","","","","","",""\n',
+      [
+        'DOCKET_NUMBER,USDOT_NUMBER,OP_AUTH_TYPE,OP_AUTH_STATUS,BOND_REQ,BOND_FILE,DBA_NAME,LEGAL_NAME',
+        'MC012892,2217388,Broker of Property (Except Household Goods),Inactive,Y,N,N C BRINKE,NORMAN CHARLES BRINKE',
+      ].join('\n'),
     );
 
     try {
@@ -253,7 +256,7 @@ describe('FMCSA data importer', () => {
         sourceFormat: 'motusAllHist',
       });
 
-      expect(preview.columnCount).toBe(43);
+      expect(preview.columnCount).toBe(8);
       expect(preview.preview[0]).toMatchObject({
         docket_number: 'MC012892',
         dot_number: '02217388',
@@ -303,7 +306,7 @@ describe('FMCSA data importer', () => {
         skipped: false,
         failed: false,
       }));
-      expect(fs.existsSync(path.join(dir, 'motusDiff', 'motus_carrier_2026_06_15.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(dir, 'motusDiff', 'motus_carrier_2026_06_15.csv'))).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -329,14 +332,8 @@ describe('FMCSA data importer', () => {
       });
 
       expect(preview.columnCount).toBe(28);
+      expect(preview.preview).toHaveLength(1);
       expect(preview.preview[0]).toMatchObject({
-        docket_number: 'MC86415293',
-        dot_number: '07388268',
-        legal_name: 'TEST CARRIER',
-        common_stat: 'A',
-        bond_req: 'N',
-      });
-      expect(preview.preview[1]).toMatchObject({
         docket_number: 'MC999999',
         dot_number: '01234567',
         dba_name: 'TEST DBA',
@@ -348,13 +345,15 @@ describe('FMCSA data importer', () => {
     }
   });
 
-  it('maps Motus carrier fields from fixed layout', () => {
+  it('maps Motus carrier fields from headers', () => {
+    const headers = [
+      'DOCKET_NUMBER', 'USDOT_NUMBER', 'OP_AUTH_TYPE', 'OP_AUTH_STATUS',
+      'BOND_REQ', 'BOND_FILE', 'DBA_NAME', 'LEGAL_NAME',
+    ];
     const row = mapDatasetRow('carrier', [
-      'MC012892', '02217388', ' ', '', 'N', 'N', 'I', 'N', 'N', 'N', 'N', 'N', 'N',
-      'N', 'N', 'N', 'N', 'N', '00000', 'N', 'Y', '00000', 'N', 'N', 'Y',
-      'N C BRINKE', 'NORMAN CHARLES BRINKE', '1200 SEABOARD DR', '', 'HIALEAH',
-      'FL', 'US', '33010', '', '', '', '', '', '', '', '', '', '',
-    ], undefined, 'motusAllHist');
+      'MC012892', '02217388', 'Broker of Property (Except Household Goods)', 'Inactive',
+      'Y', 'N', 'N C BRINKE', 'NORMAN CHARLES BRINKE',
+    ], headers, 'motusAllHist');
 
     expect(row).toMatchObject({
       docket_number: 'MC012892',
@@ -367,54 +366,39 @@ describe('FMCSA data importer', () => {
     });
   });
 
-  it('maps Motus active-insurance fields from fixed layout', () => {
+  it('maps Motus active-insurance fields from headers', () => {
+    const headers = [
+      'DOCKET_NUMBER', 'USDOT_NUMBER', 'INS_FORM_CODE', 'INS_TYPE_CODE',
+      'POLICY_NO', 'EFFECTIVE_DATE', 'INSURANCE_COMPANY_NAME', 'TRANS_DATE',
+    ];
     const row = mapDatasetRow('active-insurance', [
-      'MC1572973',
-      '04100741',
-      '91X',
-      'BIPD/Primary',
-      'PROGRESSIVE MOUNTAIN INSURANCE COMPANY OF OHI',
-      'CA972204680',
-      '08/14/2023',
-      '0',
-      '1000',
-      '08/10/2032',
-      '08/10/2032',
-    ], undefined, 'motusAllHist');
+      'MC1572973', '04100741', '91X', '1', 'CA972204680', '20320810',
+      'PROGRESSIVE MOUNTAIN INSURANCE COMPANY OF OHI', '20230814',
+    ], headers, 'motusAllHist');
 
     expect(row).toMatchObject({
       docket_number: 'MC1572973',
       dot_number: '04100741',
       ins_form_code: '91X',
-      insurance_type_description: 'BIPD/Primary',
+      insurance_type_description: '1',
       insurance_company_name: 'PROGRESSIVE MOUNTAIN INSURANCE COMPANY OF OHI',
       policy_no: 'CA972204680',
       posted_date: '2023-08-14',
       effective_date: '2032-08-10',
-      cancel_effective_date: '2032-08-10',
+      cancel_effective_date: null,
     });
   });
 
-  it('maps Motus insurance-history fields from fixed layout', () => {
+  it('maps Motus insurance-history fields from headers', () => {
+    const headers = [
+      'DOCKET_NUMBER', 'USDOT_NUMBER', 'INS_FORM_CODE', 'FILING_STATUS_REASON',
+      'INS_TYPE_DESC', 'POLICY_NO', 'EFFECTIVE_DATE', 'CANCL_EFFECTIVE_DATE',
+      'INSURANCE_COMPANY_NAME',
+    ];
     const row = mapDatasetRow('insurance-history', [
-      'FF000031',
-      '00000000',
-      '91',
-      'Cancelled',
-      '35',
-      ' ',
-      'BIPD',
-      'TP9458318',
-      '750',
-      '',
-      '01/01/1986',
-      '',
-      '',
-      '09/23/2004',
-      'CANCEL',
-      '00',
-      'NATIONAL FIRE INSURANCE CO.',
-    ], undefined, 'motusAllHist');
+      'FF000031', '00000000', '91', 'Cancelled', 'BIPD', 'TP9458318',
+      '19860101', '20040923', 'NATIONAL FIRE INSURANCE CO.',
+    ], headers, 'motusAllHist');
 
     expect(row).toMatchObject({
       docket_number: 'FF000031',
@@ -425,20 +409,19 @@ describe('FMCSA data importer', () => {
       policy_no: 'TP9458318',
       effective_date: '1986-01-01',
       cancel_effective_date: '2004-09-23',
-      specific_cancellation_method: 'CANCEL',
+      specific_cancellation_method: null,
       insurance_company_name: 'NATIONAL FIRE INSURANCE CO.',
     });
   });
 
-  it('maps Motus revocation fields from fixed layout', () => {
+  it('maps Motus revocation fields from headers', () => {
+    const headers = [
+      'DOCKET_NUMBER', 'USDOT_NUMBER', 'OP_AUTH_TYPE',
+      'ORDER1_SERVE_DATE', 'ORDER1_TYPE_DESC', 'ORDER1_EFFECTIVE_DATE',
+    ];
     const row = mapDatasetRow('revocation', [
-      'MX255345',
-      '00000000',
-      'COMMON',
-      '11/22/2005',
-      'INVOLUNTARY REVOCATION',
-      '12/27/2005',
-    ], undefined, 'motusAllHist');
+      'MX255345', '00000000', 'COMMON', '20051122', 'INVOLUNTARY REVOCATION', '20051227',
+    ], headers, 'motusAllHist');
 
     expect(row).toMatchObject({
       docket_number: 'MX255345',
@@ -450,37 +433,34 @@ describe('FMCSA data importer', () => {
     });
   });
 
-  it('maps Motus authority-history fields from fixed layout', () => {
+  it('maps Motus authority-history fields from headers', () => {
+    const headers = [
+      'DOCKET_NUMBER', 'USDOT_NUMBER', 'OP_AUTH_TYPE',
+      'OP_AUTH_STATUS', 'REASON', 'STATUS_CHANGE_DATE',
+    ];
     const row = mapDatasetRow('authority-history', [
-      'MC000647',
-      '00085526',
-      '17',
-      'MOTOR PROPERTY COMMON CARRIER',
-      'GRANTED',
-      '05/13/1981',
-      'REVOKED',
-      '02/27/1992',
-      '05/14/1992',
-    ], undefined, 'motusAllHist');
+      'MC000647', '00085526', 'Motor Carrier of Property (Except Household Goods)',
+      'Inactive', 'REVOKED', '19920227',
+    ], headers, 'motusAllHist');
 
     expect(row).toMatchObject({
       docket_number: 'MC000647',
       dot_number: '00085526',
-      sub_number: '17',
-      authority_type: 'MOTOR PROPERTY COMMON CARRIER',
-      original_action: 'GRANTED',
-      original_action_date: '1981-05-13',
-      final_action: 'REVOKED',
+      sub_number: null,
+      authority_type: 'Motor Carrier of Property (Except Household Goods)',
+      original_action: 'REVOKED',
+      original_action_date: null,
+      final_action: 'Inactive',
       final_decision_date: '1992-02-27',
-      final_served_date: '1992-05-14',
+      final_served_date: null,
       is_carrier_authority: true,
-      is_revoked: true,
+      is_revoked: false,
     });
   });
 
   it('skips a Motus file with the same processed identity', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fmcsa-motus-processed-'));
-    const body = '"MC012892","02217388"," ","","N","N","I","N","N","N","N","N","N","N","N","N","N","N","00000","N","Y","00000","N","N","Y","N C BRINKE","NORMAN CHARLES BRINKE","1200 SEABOARD DR","","HIALEAH","FL","US","33010","","","","","","","","","",""\n';
+    const body = 'DOCKET_NUMBER,USDOT_NUMBER,OP_AUTH_TYPE,OP_AUTH_STATUS\nMC012892,2217388,Broker of Property (Except Household Goods),Inactive\n';
     const responseHeaders = {
       ETag: '"same-motus-file"',
       'Last-Modified': 'Sun, 14 Jun 2026 10:00:00 GMT',
@@ -521,7 +501,7 @@ describe('FMCSA data importer', () => {
         skippedReason: 'already_processed',
         failed: false,
       }));
-      expect(fs.existsSync(path.join(dir, 'motusAllHist', 'motus_carrier_all_with_history_2026_06_15.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'motusAllHist', 'motus_carrier_all_with_history_2026_06_15.csv'))).toBe(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -538,7 +518,7 @@ describe('FMCSA data importer', () => {
         inputSource: filePath,
         sourceFormat: 'motusAllHist',
         pool,
-      })).rejects.toThrow('Unexpected active-insurance motusAllHist column count');
+      })).rejects.toThrow('Expected a header row for active-insurance motusAllHist');
       expect(pool.query).not.toHaveBeenCalled();
     } finally {
       fs.unlinkSync(filePath);
@@ -666,6 +646,8 @@ describe('FMCSA data importer', () => {
 
   it('parses valid MM/DD/YYYY dates and rejects invalid dates', () => {
     expect(parseFmcsaDate('12/31/2025')).toBe('2025-12-31');
+    expect(parseFmcsaDate('20251231')).toBe('2025-12-31');
+    expect(parseFmcsaDate('2025-12-31T00:00:00.000')).toBe('2025-12-31');
     expect(parseFmcsaDate('02/30/2025')).toBeNull();
     expect(parseFmcsaDate('')).toBeNull();
   });
@@ -695,6 +677,41 @@ describe('FMCSA data importer', () => {
     expect(batch.text).not.toContain('DO UPDATE SET');
     expect(batch.text).not.toContain('raw_record = EXCLUDED.raw_record');
     expect(batch.text).not.toContain('updated_at = EXCLUDED.updated_at');
+  });
+
+  it('builds Motus upserts against current serving tables by canonical key', () => {
+    const row = mapDatasetRow(
+      'active-insurance',
+      ['MC1557892', '4090101', 'BMC-84', '4', 'POLICY1', '20240901', 'SURETY CO', '20240910'],
+      [
+        'DOCKET_NUMBER',
+        'USDOT_NUMBER',
+        'INS_FORM_CODE',
+        'INS_TYPE_CODE',
+        'POLICY_NO',
+        'EFFECTIVE_DATE',
+        'INSURANCE_COMPANY_NAME',
+        'TRANS_DATE',
+      ],
+      'motusAllHist',
+    );
+
+    if (!row) {
+      throw new Error('Expected Motus active-insurance row to map.');
+    }
+
+    const batch = buildUpsertBatch('active-insurance', [row], 'motusAllHist');
+
+    expect(batch.text).toContain('INSERT INTO fmcsa_current_active_pending_insurance');
+    expect(batch.text).toContain('ON CONFLICT (canonical_key)');
+    expect(batch.text).toContain('DO UPDATE SET');
+    expect(batch.text).toContain('source_priority <= EXCLUDED.source_priority');
+    expect(row).toMatchObject({
+      canonical_key: 'MC1557892|04090101|BMC-84|POLICY1|2024-09-01',
+      source_provider: 'motus',
+      source_priority: 100,
+      cancel_effective_date: null,
+    });
   });
 
   it('preserves rows with same selected columns but different hidden raw fields', () => {

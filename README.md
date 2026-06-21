@@ -2,7 +2,8 @@
 
 Standalone streaming importer for FMCSA source datasets.
 
-It imports full-history or daily-difference CSV/TXT files into Postgres source tables used by the company-check service.
+Legacy imports remain in the `fmcsa_*` source tables. Motus imports are normalized into
+legacy-compatible `fmcsa_current_*` serving tables used by broker-check.
 
 ## Supported Datasets
 
@@ -116,6 +117,25 @@ npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insuranc
 npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insurance-history --force
 ```
 
+Initial current-table rebuild (legacy baseline followed by Motus All History overlay):
+
+```bash
+npm run sync:fmcsa -- \
+  --provider motus \
+  --source allHist \
+  --datasets carrier,active-insurance,insurance-history,revocation,authority-history \
+  --rebuild-current
+```
+
+Daily Motus overlay:
+
+```bash
+npm run sync:fmcsa -- \
+  --provider motus \
+  --source diff \
+  --datasets carrier,active-insurance,insurance-history,revocation,authority-history
+```
+
 Optional local directory override:
 
 ```bash
@@ -124,7 +144,7 @@ npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insuranc
 
 ## Tables
 
-The importer writes to:
+Legacy imports write to:
 
 - `fmcsa_carriers`
 - `fmcsa_active_pending_insurance`
@@ -132,11 +152,17 @@ The importer writes to:
 - `fmcsa_revocations`
 - `fmcsa_authority_history`
 
-Broker-check v1 requires only:
+The migration also creates current serving tables:
 
-- `fmcsa_carriers`
-- `fmcsa_active_pending_insurance`
-- `fmcsa_insurance_history`
+- `fmcsa_current_carriers`
+- `fmcsa_current_active_pending_insurance`
+- `fmcsa_current_insurance_history`
+- `fmcsa_current_revocations`
+- `fmcsa_current_authority_history`
+
+Broker-check reads the first three current tables. Motus rows never write to the legacy
+tables. Current rows include `source_provider`, `source_priority`,
+`last_legacy_seen_at`, and `last_motus_seen_at` for debugging.
 
 Every table includes:
 
@@ -243,7 +269,7 @@ npm run import:fmcsa:batch -- --source diff --datasets carrier,active-insurance,
 
 ## Production Deployment
 
-Required DB tables:
+Required legacy/source DB tables:
 
 - `fmcsa_carriers`
 - `fmcsa_active_pending_insurance`
@@ -251,11 +277,15 @@ Required DB tables:
 - `fmcsa_revocations`
 - `fmcsa_authority_history`
 
-Broker-check v1 requires only:
+Required current serving DB tables:
 
-- `fmcsa_carriers`
-- `fmcsa_active_pending_insurance`
-- `fmcsa_insurance_history`
+- `fmcsa_current_carriers`
+- `fmcsa_current_active_pending_insurance`
+- `fmcsa_current_insurance_history`
+- `fmcsa_current_revocations`
+- `fmcsa_current_authority_history`
+
+Broker-check v1 reads only the first three current serving tables.
 
 Local environment:
 

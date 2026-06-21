@@ -12,7 +12,6 @@ import {
   buildFmcsaDownloadUrl,
   buildFmcsaSodaExportUrl,
   buildMotusRowsCsvDownloadUrl,
-  buildMotusTextDownloadUrl,
   datasetKeyToName,
   FMCSA_DATASETS,
   MOTUS_DATASETS,
@@ -372,9 +371,7 @@ export async function downloadFmcsaFiles(options: {
     try {
       const downloadUrl =
         provider === 'motus'
-          ? options.downloadMode === 'diff'
-            ? buildMotusRowsCsvDownloadUrl(dataset.datasetId)
-            : buildMotusTextDownloadUrl(dataset.datasetId)
+          ? buildMotusRowsCsvDownloadUrl(dataset.datasetId)
           : options.downloadMode === 'diff'
           ? buildFmcsaDownloadUrl(dataset.datasetId)
           : buildFmcsaSodaExportUrl(dataset.datasetId);
