@@ -15,14 +15,16 @@ These are deployment notes only. Do not create AWS resources from this repositor
 3. Build the Docker image.
 4. Push the image to ECR.
    - Repository URI: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev`
-   - Current amd64 image tag: `amd64-a9e484c-20260614105333`
-   - Previous amd64 image tags: `amd64-90d1bc6`, `latest-amd64`
+   - Current staged Motus amd64 image tag: `motus-diff-20260615124523`
+   - Previous amd64 image tags: `amd64-a9e484c-20260614105333`, `amd64-90d1bc6`, `latest-amd64`
 5. Create an ECS task definition for the `fmcsa-data-importer` container.
    - Task definition is created.
    - Family: `fmcsa-importer-dev`
-   - Current ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:5`
+   - Current scheduled ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:5`
+   - Current staged Motus ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:6`
    - Container name: `fmcsa-data-importer`
-   - Image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:amd64-a9e484c-20260614105333`
+   - Scheduled image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:amd64-a9e484c-20260614105333`
+   - Staged Motus image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:motus-diff-20260615124523`
    - Execution role: `arn:aws:iam::010257029704:role/fmcsa-importer-ecs-execution-dev`
    - Task role: `arn:aws:iam::010257029704:role/fmcsa-importer-ecs-task-dev`
    - Log group: `/ecs/fmcsa-importer-dev`
@@ -32,6 +34,12 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - Revision 4 adds production-safe retry handling for transient FMCSA/Socrata download failures.
    - Revision 5 treats HTTP 404 for daily diff downloads as "not published yet" and skips without failing the job.
    - Revision 5 captures file identity metadata and supports duplicate daily diff protection using dataset, source, ETag, Last-Modified, Content-Length, and SHA-256.
+   - Revision 6 stages the Motus daily-diff adapter. Motus daily-diff resources use Socrata `rows.csv?accessType=DOWNLOAD`; Motus all-history resources remain file-backed text assets.
+   - Revision 6 was registered but is not wired to the scheduler.
+   - AWS/dev migration `002_create_fmcsa_raw_imports.sql` is blocked with `permission denied for schema public` when using the current `fmcsa-importer-dev/database-url` secret. A DB owner/admin migration credential is required before live Motus sync.
+   - Manual Motus carrier dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/599c689a8921476f985e51f982cf50f7`
+   - Manual Motus carrier dry-run command: `npm run sync:fmcsa -- --provider motus --source diff --dry-run --datasets carrier`
+   - Manual Motus carrier dry-run result: passed with exit code 0 on revision 6. Logs showed `storage: s3`, wrote `s3://fmcsa-importer-dataset-dev/fmcsa/dataset/motusDiff/motus_carrier_2026_06_15.txt`, validated size `29362`, previewed 3 rows, and imported 0 rows.
    - Manual dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/4f9db872e5c343e6bcdbfff6ba8d667b`
    - Manual dry-run command: `npm run sync:fmcsa -- --dry-run --source diff --datasets carrier`
    - Manual dry-run result: passed with exit code 0. FMCSA returned HTTP 404 for the carrier daily diff, and the importer skipped it as not published yet.
@@ -60,7 +68,7 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - Scheduler role: `arn:aws:iam::010257029704:role/fmcsa-importer-scheduler-dev`
    - Network: `subnet-0fb837392966b8f56`, `subnet-06771f8d9ba66631f`, `sg-05ff742d7518b9226`, public IP enabled.
    - Command: `npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insurance-history`
-   - Last verified: schedule state `ENABLED`, target revision `5`, command unchanged. `get-schedule` did not return a next invocation timestamp.
+   - Last verified: schedule state `ENABLED`, target revision `5`, command unchanged. The scheduler was not modified during revision 6 staging.
 9. Send ECS task logs to CloudWatch.
 10. Optionally create a retry schedule at 9:00 AM America/Chicago using the same command.
 

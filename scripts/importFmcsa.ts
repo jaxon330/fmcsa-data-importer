@@ -32,7 +32,7 @@ function parseArgs(args: string[]): CliArgs {
 
   if (!inputSource) {
     throw new Error(
-      `Usage: npm run import:fmcsa -- <datasetType> <filePathOrUrl> --source <diff|allHist> [--dry-run]\nSupported datasetType values: ${DATASET_TYPES.join(', ')}`,
+      `Usage: npm run import:fmcsa -- <datasetType> <filePathOrUrl> --source <diff|allHist|motusDiff|motusAllHist> [--dry-run]\nSupported datasetType values: ${DATASET_TYPES.join(', ')}`,
     );
   }
 
@@ -66,7 +66,7 @@ function parseArgs(args: string[]): CliArgs {
   }
 
   if (!sourceFormat) {
-    throw new Error('--source is required and must be either "diff" or "allHist"');
+    throw new Error('--source is required and must be one of: diff, allHist, motusDiff, motusAllHist');
   }
 
   return { datasetType, inputSource, sourceFormat, dryRun, skipRows, progressEvery };

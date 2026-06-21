@@ -5,16 +5,20 @@ import {
   BROKER_CHECK_V1_DATASETS,
   datasetKeyToName,
   FMCSA_DATASETS,
+  MOTUS_DATASETS,
   parseFmcsaDatasetKeys,
+  toRawSource,
   type FmcsaDatasetKey,
   type FmcsaDownloadMode,
+  type FmcsaProvider,
+  type FmcsaRawSource,
 } from '../config/fmcsaDatasets';
 import {
   getBatchSize,
   importFmcsaDataset,
   previewFmcsaDataset,
-  parseSourceFormat,
   type DatasetType,
+  type FmcsaSourceFormat,
   type ImportStats,
 } from '../importers/fmcsaDataImporter';
 import { downloadFmcsaFiles, type DownloadResult } from './downloadFmcsaFiles';
@@ -33,6 +37,7 @@ dotenv.config({ quiet: true });
 
 interface CliArgs {
   source: FmcsaDownloadMode;
+  provider: FmcsaProvider;
   datasets: FmcsaDatasetKey[];
   dryRun: boolean;
   force: boolean;
@@ -42,6 +47,7 @@ interface CliArgs {
 interface DatasetSyncSummary {
   datasetKey: FmcsaDatasetKey;
   datasetType: DatasetType;
+  rawSource: FmcsaRawSource;
   fileRef?: FmcsaRawFileRef;
   download?: DownloadResult;
   downloadIdentity?: FmcsaDownloadFileIdentity;
@@ -57,6 +63,7 @@ interface DatasetSyncSummary {
 
 function parseArgs(args: string[]): CliArgs {
   let source: FmcsaDownloadMode | undefined;
+  let provider: FmcsaProvider = 'legacy';
   let datasets: FmcsaDatasetKey[] | undefined;
   let dryRun = false;
   let force = false;
@@ -66,13 +73,23 @@ function parseArgs(args: string[]): CliArgs {
     const arg = args[index];
 
     if (arg === '--source') {
-      source = parseSourceFormat(args[index + 1]);
+      source = parseDownloadMode(args[index + 1]);
       index += 1;
       continue;
     }
 
     if (arg === '--datasets') {
       datasets = parseFmcsaDatasetKeys(args[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--provider') {
+      const value = args[index + 1];
+      if (value !== 'legacy' && value !== 'motus') {
+        throw new Error('--provider must be either "legacy" or "motus"');
+      }
+      provider = value;
       index += 1;
       continue;
     }
@@ -105,6 +122,7 @@ function parseArgs(args: string[]): CliArgs {
 
   return {
     source,
+    provider,
     datasets: datasets ?? parseFmcsaDatasetKeys(undefined, BROKER_CHECK_V1_DATASETS),
     dryRun,
     force,
@@ -114,6 +132,11 @@ function parseArgs(args: string[]): CliArgs {
 
 async function run(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  assertImportableDatasets(args.datasets);
+  const rawSource = toRawSource(args.provider, args.source);
+  const importSourceFormat: FmcsaSourceFormat = args.provider === 'motus'
+    ? args.source === 'diff' ? 'motusDiff' : 'motusAllHist'
+    : args.source;
   const storage = getFmcsaRawStorageConfig(args.dir);
   const s3Client = new S3Client({});
   const batchSize = getBatchSize();
@@ -123,12 +146,14 @@ async function run(): Promise<void> {
     summaries.set(datasetKey, {
       datasetKey,
       datasetType: datasetKeyToName(datasetKey) as DatasetType,
+      rawSource,
       skipped: false,
       failed: false,
     });
   }
 
   console.log('FMCSA sync started');
+  console.log(`provider: ${args.provider}`);
   console.log(`source: ${args.source}`);
   console.log(`datasets: ${args.datasets.map(datasetKeyToName).join(',')}`);
   console.log(`dry-run: ${args.dryRun ? 'yes' : 'no'}`);
@@ -139,6 +164,7 @@ async function run(): Promise<void> {
   console.log('Downloading files...');
   const downloadResults = await downloadFmcsaFiles({
     downloadMode: args.source,
+    provider: args.provider,
     datasetKeys: args.datasets,
     force: args.force,
     dir: args.dir,
@@ -179,10 +205,10 @@ async function run(): Promise<void> {
     }
 
     try {
-      const dataset = FMCSA_DATASETS[args.source][datasetKey];
+      const dataset = getDatasetDownloadConfig(args.provider, args.source, datasetKey);
       const fileRef = summary.fileRef ?? buildFmcsaRawFileRef(
         storage,
-        args.source,
+        rawSource,
         buildFilename(dataset.filePrefix, dataset.extension, new Date()),
       );
       const validation = await validateRawFile(fileRef, s3Client);
@@ -232,7 +258,7 @@ async function run(): Promise<void> {
           const preview = await previewFmcsaDataset({
             datasetType: summary.datasetType,
             inputSource: summary.fileRef.inputSource,
-            sourceFormat: args.source,
+            sourceFormat: importSourceFormat,
             s3Client,
           });
           summary.dryRunRowsPreviewed = preview.preview.length;
@@ -246,7 +272,7 @@ async function run(): Promise<void> {
         const stats = await importFmcsaDataset({
           datasetType: summary.datasetType,
           inputSource: summary.fileRef.inputSource,
-          sourceFormat: args.source,
+          sourceFormat: importSourceFormat,
           pool: pool as Pool,
           batchSize,
           progressEvery: 100000,
@@ -260,10 +286,22 @@ async function run(): Promise<void> {
         if (summary.downloadIdentity) {
           const processedRef = buildProcessedFileIdentityRef(
             storage,
-            args.source,
+            rawSource,
             datasetKey,
             summary.downloadIdentity,
           );
+          await recordRawImport(pool as Pool, {
+            provider: args.provider,
+            rawSource,
+            datasetKey,
+            datasetType: summary.datasetType,
+            resourceId: getDatasetDownloadConfig(args.provider, args.source, datasetKey).datasetId,
+            fileRef: summary.fileRef,
+            identity: summary.downloadIdentity,
+            stats,
+          });
+          console.log('raw import metadata recorded');
+
           await markProcessedFileIdentity(processedRef, storage, {
             datasetType: summary.datasetType,
             file: summary.fileRef.displayPath,
@@ -300,6 +338,80 @@ async function run(): Promise<void> {
   }
 
   console.log('FMCSA sync completed');
+}
+
+function parseDownloadMode(value: string | undefined): FmcsaDownloadMode {
+  if (value === 'diff' || value === 'allHist') {
+    return value;
+  }
+
+  throw new Error('--source is required and must be either "diff" or "allHist"');
+}
+
+function assertImportableDatasets(datasetKeys: FmcsaDatasetKey[]): void {
+  const unsupported = datasetKeys.filter((datasetKey) => datasetKey === 'insurance');
+  if (unsupported.length > 0) {
+    throw new Error('The insurance dataset is download-only in this importer because no existing normalized compatibility table exists for it.');
+  }
+}
+
+function getDatasetDownloadConfig(provider: FmcsaProvider, source: FmcsaDownloadMode, datasetKey: FmcsaDatasetKey) {
+  const datasets = provider === 'motus' ? MOTUS_DATASETS[source] : FMCSA_DATASETS[source];
+  if (!(datasetKey in datasets)) {
+    throw new Error(`${provider} ${source} does not support dataset ${datasetKeyToName(datasetKey)}`);
+  }
+
+  return datasets[datasetKey as keyof typeof datasets];
+}
+
+async function recordRawImport(pool: Pool, input: {
+  provider: FmcsaProvider;
+  rawSource: FmcsaRawSource;
+  datasetKey: FmcsaDatasetKey;
+  datasetType: DatasetType;
+  resourceId: string;
+  fileRef: FmcsaRawFileRef;
+  identity: FmcsaDownloadFileIdentity;
+  stats: ImportStats;
+}): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO fmcsa_raw_imports (
+        provider,
+        source,
+        dataset_key,
+        dataset_type,
+        resource_id,
+        file_name,
+        file_path,
+        etag,
+        last_modified,
+        content_length,
+        sha256,
+        rows_read,
+        rows_inserted_or_updated,
+        rows_failed
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ON CONFLICT DO NOTHING
+    `,
+    [
+      input.provider,
+      input.rawSource,
+      input.datasetKey,
+      input.datasetType,
+      input.resourceId,
+      input.fileRef.filename,
+      input.fileRef.displayPath,
+      input.identity.etag ?? null,
+      input.identity.lastModified ?? null,
+      input.identity.contentLength ?? null,
+      input.identity.sha256 ?? null,
+      input.stats.rowsRead,
+      input.stats.rowsInsertedOrUpdated,
+      input.stats.rowsFailed,
+    ],
+  );
 }
 
 function printFinalSummary(summaries: DatasetSyncSummary[]): void {

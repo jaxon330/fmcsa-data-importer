@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import type { FmcsaDatasetKey, FmcsaDownloadMode } from '../config/fmcsaDatasets';
+import type { FmcsaDatasetKey, FmcsaRawSource } from '../config/fmcsaDatasets';
 
 export type FmcsaStorageType = 'local' | 's3';
 
@@ -14,7 +14,7 @@ export interface FmcsaRawStorageConfig {
 }
 
 export interface FmcsaRawFileRef {
-  source: FmcsaDownloadMode;
+  source: FmcsaRawSource;
   filename: string;
   localPath?: string;
   s3Key?: string;
@@ -35,7 +35,7 @@ export interface FmcsaDownloadFileIdentity {
 }
 
 export interface FmcsaProcessedFileIdentityRef {
-  source: FmcsaDownloadMode;
+  source: FmcsaRawSource;
   datasetKey: FmcsaDatasetKey;
   identityKey: string;
   localPath?: string;
@@ -71,7 +71,7 @@ export function getFmcsaRawStorageConfig(dirOverride?: string): FmcsaRawStorageC
 
 export function buildFmcsaRawFileRef(
   storage: FmcsaRawStorageConfig,
-  source: FmcsaDownloadMode,
+  source: FmcsaRawSource,
   filename: string,
 ): FmcsaRawFileRef {
   if (storage.storageType === 's3') {
@@ -98,7 +98,7 @@ export function buildFmcsaRawFileRef(
 
 export function buildProcessedFileIdentityRef(
   storage: FmcsaRawStorageConfig,
-  source: FmcsaDownloadMode,
+  source: FmcsaRawSource,
   datasetKey: FmcsaDatasetKey,
   identity: FmcsaDownloadFileIdentity,
 ): FmcsaProcessedFileIdentityRef {
@@ -126,7 +126,7 @@ export function buildProcessedFileIdentityRef(
   };
 }
 
-export function getFmcsaRawDir(storage: FmcsaRawStorageConfig, source: FmcsaDownloadMode): string {
+export function getFmcsaRawDir(storage: FmcsaRawStorageConfig, source: FmcsaRawSource): string {
   const rawDataDir = path.resolve(process.cwd(), storage.localRawDataDir);
   return path.basename(rawDataDir) === source ? rawDataDir : path.join(rawDataDir, source);
 }
@@ -282,7 +282,7 @@ function parseBucketFromS3Url(inputSource: string): string {
 }
 
 function createProcessedFileIdentityKey(
-  source: FmcsaDownloadMode,
+  source: FmcsaRawSource,
   datasetKey: FmcsaDatasetKey,
   identity: FmcsaDownloadFileIdentity,
 ): string {
