@@ -45,7 +45,7 @@ export interface FmcsaProcessedFileIdentityRef {
 
 const DEFAULT_STORAGE_TYPE = 'local';
 const DEFAULT_RAW_DATA_DIR = './data/raw';
-const DEFAULT_S3_PREFIX = 'fmcsa/raw';
+const DEFAULT_S3_PREFIX = 'fmcsa/dataset';
 
 export function getFmcsaRawStorageConfig(dirOverride?: string): FmcsaRawStorageConfig {
   const storageType = process.env.FMCSA_STORAGE_TYPE ?? DEFAULT_STORAGE_TYPE;
@@ -54,11 +54,11 @@ export function getFmcsaRawStorageConfig(dirOverride?: string): FmcsaRawStorageC
   }
 
   const localRawDataDir = dirOverride ?? process.env.FMCSA_LOCAL_RAW_DATA_DIR ?? DEFAULT_RAW_DATA_DIR;
-  const s3Prefix = trimSlashes(process.env.FMCSA_S3_PREFIX ?? DEFAULT_S3_PREFIX);
-  const s3BucketName = process.env.FMCSA_S3_BUCKET_NAME;
+  const s3Prefix = trimSlashes(process.env.FMCSA_RAW_S3_PREFIX ?? process.env.FMCSA_S3_PREFIX ?? DEFAULT_S3_PREFIX);
+  const s3BucketName = process.env.FMCSA_RAW_S3_BUCKET ?? process.env.FMCSA_S3_BUCKET_NAME;
 
   if (storageType === 's3' && !s3BucketName) {
-    throw new Error('FMCSA_S3_BUCKET_NAME is required when FMCSA_STORAGE_TYPE=s3.');
+    throw new Error('FMCSA_RAW_S3_BUCKET or FMCSA_S3_BUCKET_NAME is required when FMCSA_STORAGE_TYPE=s3.');
   }
 
   return {
@@ -158,7 +158,7 @@ export async function processedFileIdentityExists(
   }
 
   if (!storage.s3BucketName) {
-    throw new Error('FMCSA_S3_BUCKET_NAME is required for S3 processed file identity checks.');
+    throw new Error('FMCSA_RAW_S3_BUCKET or FMCSA_S3_BUCKET_NAME is required for S3 processed file identity checks.');
   }
 
   try {
@@ -245,7 +245,7 @@ export async function markProcessedFileIdentity(
   }
 
   if (!storage.s3BucketName) {
-    throw new Error('FMCSA_S3_BUCKET_NAME is required for S3 processed file identity markers.');
+    throw new Error('FMCSA_RAW_S3_BUCKET or FMCSA_S3_BUCKET_NAME is required for S3 processed file identity markers.');
   }
 
   await s3Client.send(

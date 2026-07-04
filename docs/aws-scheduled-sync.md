@@ -50,8 +50,8 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - `AWS_PROFILE=fmcsa-importer`
    - `AWS_REGION=us-east-2`
    - `FMCSA_STORAGE_TYPE=s3`
-   - `FMCSA_S3_BUCKET_NAME=fmcsa-importer-dataset-dev`
-   - `FMCSA_S3_PREFIX=fmcsa/dataset`
+   - `FMCSA_RAW_S3_BUCKET=fmcsa-importer-dataset-dev`
+   - `FMCSA_RAW_S3_PREFIX=fmcsa/dataset`
    - `LOG_LEVEL=INFO`
 7. Attach an IAM role with:
    - IAM roles are created.
@@ -79,8 +79,8 @@ These are deployment notes only. Do not create AWS resources from this repositor
 - Daily diff files are requested from the configured current FMCSA URL. The importer does not try previous-date URL fallback.
 - HTTP 404 for a daily diff file means FMCSA has not published the current file yet. The dataset is skipped, the same 404 is not retried, and the job can complete successfully if all requested datasets are only missing due to 404.
 - All-history sync should be manual or monthly, not daily.
-- Raw S3 keys use `{FMCSA_S3_PREFIX}/{source}/{filename}`. Date folders are not used because the FMCSA date is already in each filename.
+- Raw S3 keys use `{FMCSA_RAW_S3_PREFIX}/{source}/{filename}`. Date folders are not used because the FMCSA date is already in each filename.
 - Downloads retry transient failures such as HTTP 429, 500, 502, 503, 504, timeouts, and connection resets with bounded exponential backoff.
-- Duplicate daily diff protection records processed file identity markers under `{FMCSA_S3_PREFIX}/{source}/_processed/{datasetKey}/`. Identity is based on dataset, source, ETag, Last-Modified, Content-Length, and SHA-256 when available.
+- Duplicate daily diff protection records processed file identity markers under `{FMCSA_RAW_S3_PREFIX}/{source}/_processed/{datasetKey}/`. Identity is based on dataset, source, ETag, Last-Modified, Content-Length, and SHA-256 when available.
 - Real secret values are stored in AWS Secrets Manager and must never be committed to the repository.
 - Update this document after every successful AWS implementation step so deployment state stays aligned with real infrastructure.

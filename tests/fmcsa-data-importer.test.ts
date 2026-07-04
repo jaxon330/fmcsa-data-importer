@@ -61,6 +61,23 @@ describe('FMCSA data importer', () => {
     });
   });
 
+  it('accepts ECS raw S3 environment aliases', () => {
+    process.env = {
+      ...originalEnv,
+      FMCSA_STORAGE_TYPE: 's3',
+      FMCSA_RAW_S3_BUCKET: 'fmcsa-importer-dataset-dev',
+      FMCSA_RAW_S3_PREFIX: '/fmcsa/dataset/',
+      FMCSA_S3_BUCKET_NAME: '',
+      FMCSA_S3_PREFIX: '',
+    };
+
+    expect(getFmcsaRawStorageConfig()).toMatchObject({
+      storageType: 's3',
+      s3BucketName: 'fmcsa-importer-dataset-dev',
+      s3Prefix: 'fmcsa/dataset',
+    });
+  });
+
   it('canonicalizes MC, FF, and MX docket values', () => {
     expect(canonicalizeDocketNumber('MC-1426065')).toBe('MC1426065');
     expect(canonicalizeDocketNumber('ff 000031')).toBe('FF000031');

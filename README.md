@@ -105,7 +105,7 @@ When `FMCSA_STORAGE_TYPE=s3`, downloaded raw files are uploaded to:
 Example:
 
 ```text
-fmcsa/raw/diff/carrier_2026_06_07.txt
+fmcsa/dataset/diff/carrier_2026_06_07.txt
 ```
 
 ## Sync Command
@@ -278,8 +278,8 @@ Production S3 environment:
 ```dotenv
 DATABASE_URL=postgresql://...
 FMCSA_STORAGE_TYPE=s3
-FMCSA_S3_BUCKET_NAME=dispatch-ai-fmcsa-raw-data
-FMCSA_S3_PREFIX=fmcsa/raw
+FMCSA_RAW_S3_BUCKET=fmcsa-importer-dataset-dev
+FMCSA_RAW_S3_PREFIX=fmcsa/dataset
 FMCSA_SOCRATA_APP_TOKEN=...
 LOG_LEVEL=INFO
 ```
