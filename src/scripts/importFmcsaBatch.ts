@@ -50,6 +50,20 @@ const FILENAME_PATTERNS: Record<FmcsaSourceFormat, Record<DatasetType, FilenameP
     revocation: { prefix: 'revocation_all_with_history_', extension: 'csv' },
     'authority-history': { prefix: 'authority_history_all_with_history_', extension: 'csv' },
   },
+  motusDiff: {
+    carrier: { prefix: 'motus_carrier_', extension: 'csv' },
+    'active-insurance': { prefix: 'motus_actpendins_', extension: 'csv' },
+    'insurance-history': { prefix: 'motus_inshist_', extension: 'csv' },
+    revocation: { prefix: 'motus_revocation_', extension: 'csv' },
+    'authority-history': { prefix: 'motus_authhist_', extension: 'csv' },
+  },
+  motusAllHist: {
+    carrier: { prefix: 'motus_carrier_all_with_history_', extension: 'csv' },
+    'active-insurance': { prefix: 'motus_active_pending_insurance_all_with_history_', extension: 'csv' },
+    'insurance-history': { prefix: 'motus_insurance_history_all_with_history_', extension: 'csv' },
+    revocation: { prefix: 'motus_revocation_all_with_history_', extension: 'csv' },
+    'authority-history': { prefix: 'motus_authority_history_all_with_history_', extension: 'csv' },
+  },
 };
 
 export function parseDatasetList(value: string | undefined): DatasetType[] {
@@ -161,7 +175,7 @@ function parseArgs(args: string[]): CliArgs {
   }
 
   if (!sourceFormat) {
-    throw new Error('--source is required and must be either "diff" or "allHist"');
+    throw new Error('--source is required and must be one of: diff, allHist, motusDiff, motusAllHist');
   }
 
   if (!datasets) {

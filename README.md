@@ -83,6 +83,12 @@ npm run download:fmcsa -- --download diff --force
 All-history CSV exports use the Socrata v3 export API. Set `FMCSA_SOCRATA_APP_TOKEN`
 or `SOCRATA_APP_TOKEN` if DOT requires request identification for CSV export.
 
+Motus source handling:
+
+- Daily diff uses the Socrata `rows.csv` export and saves the response unchanged with a `.csv` extension.
+- All-history uses the normal Socrata `rows.csv` export, includes headers, and is saved with a `.csv` extension.
+- The Motus-native serving tables and local validation are documented in `docs/motus-native-implementation.md`.
+
 Output:
 
 ```text
@@ -99,7 +105,7 @@ When `FMCSA_STORAGE_TYPE=s3`, downloaded raw files are uploaded to:
 Example:
 
 ```text
-fmcsa/raw/diff/carrier_2026_06_07.txt
+fmcsa/dataset/diff/carrier_2026_06_07.txt
 ```
 
 ## Sync Command
@@ -272,8 +278,8 @@ Production S3 environment:
 ```dotenv
 DATABASE_URL=postgresql://...
 FMCSA_STORAGE_TYPE=s3
-FMCSA_S3_BUCKET_NAME=dispatch-ai-fmcsa-raw-data
-FMCSA_S3_PREFIX=fmcsa/raw
+FMCSA_RAW_S3_BUCKET=fmcsa-importer-dataset-dev
+FMCSA_RAW_S3_PREFIX=fmcsa/dataset
 FMCSA_SOCRATA_APP_TOKEN=...
 LOG_LEVEL=INFO
 ```

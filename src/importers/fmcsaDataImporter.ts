@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { Readable } from 'stream';
 import { GetObjectCommand, S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import type { Pool } from 'pg';
+import { MOTUS_DATASETS } from '../config/fmcsaDatasets';
 
 export const DEFAULT_IMPORT_BATCH_SIZE = 1000;
 
@@ -15,7 +16,7 @@ export const DATASET_TYPES = [
 ] as const;
 
 export type DatasetType = (typeof DATASET_TYPES)[number];
-export type FmcsaSourceFormat = 'diff' | 'allHist';
+export type FmcsaSourceFormat = 'diff' | 'allHist' | 'motusDiff' | 'motusAllHist';
 
 export interface DatasetConfig {
   datasetType: DatasetType;
@@ -55,6 +56,7 @@ export interface ImportOptions {
   sourceFormat?: FmcsaSourceFormat;
   skipRows?: number;
   progressEvery?: number;
+  importJobId?: number;
 }
 
 export interface DryRunPreview {
@@ -71,6 +73,7 @@ interface SourceLayout {
 }
 
 const COMMON_COLUMNS = ['source_record_hash', 'raw_record', 'imported_at', 'updated_at'] as const;
+const MOTUS_COMMON_COLUMNS = ['source_record_hash', 'raw_record', 'import_job_id', 'imported_at', 'updated_at'] as const;
 
 const AUTHORITY_HISTORY_DERIVED_COLUMNS = [
   'is_broker_authority',
@@ -304,6 +307,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'mail_zip_code',
     ],
     sourceAliases: {
+      dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
       legal_name: ['legal_name'],
       dba_name: ['dba_name'],
       broker_stat: ['broker_stat'],
@@ -373,6 +377,7 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'cancel_effective_date',
     ],
     sourceAliases: {
+      dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
       insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'mod_col_1'],
       insurance_company_name: ['insurance_company_name', 'name_company'],
       posted_date: ['posted_date', 'trans_date'],
@@ -410,7 +415,9 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'insurance_company_name',
     ],
     sourceAliases: {
+      dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
       cancellation_method: ['cancellation_method', 'cancl_method_gen', 'mod_col_1'],
+      ins_form_code: ['ins_form_code'],
       insurance_type_description: ['insurance_type_description', 'ins_type_desc', 'mod_col_3'],
       cancel_effective_date: ['cancel_effective_date', 'cancl_effective_date'],
       specific_cancellation_method: ['specific_cancellation_method', 'cancl_method'],
@@ -445,10 +452,11 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'effective_date',
     ],
     sourceAliases: {
-      authority_type: ['authority_type', 'type_license'],
+      dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
+      authority_type: ['authority_type', 'type_license', 'op_auth_type'],
       serve_date: ['serve_date', 'order1_serve_date'],
-      revocation_type: ['revocation_type', 'order2_type_desc'],
-      effective_date: ['effective_date', 'order2_effective_date'],
+      revocation_type: ['revocation_type', 'order2_type_desc', 'order1_type_desc'],
+      effective_date: ['effective_date', 'order2_effective_date', 'order1_effective_date'],
     },
     insertColumns: [
       'docket_number',
@@ -478,11 +486,12 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
       'final_served_date',
     ],
     sourceAliases: {
+      dot_number: ['dot_number', 'usdot_number', 'USDOT_NUMBER'],
       authority_type: ['authority_type', 'op_auth_type', 'mod_col_1'],
-      original_action: ['original_action', 'original_action_desc'],
+      original_action: ['original_action', 'original_action_desc', 'reason'],
       original_action_date: ['original_action_date', 'orig_served_date'],
-      final_action: ['final_action', 'disp_action_desc'],
-      final_decision_date: ['final_decision_date', 'disp_decided_date'],
+      final_action: ['final_action', 'disp_action_desc', 'op_auth_status'],
+      final_decision_date: ['final_decision_date', 'disp_decided_date', 'status_change_date'],
       final_served_date: ['final_served_date', 'disp_served_date'],
     },
     insertColumns: [
@@ -505,6 +514,98 @@ export const DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
   },
 };
 
+export const MOTUS_DATASET_CONFIGS: Record<DatasetType, DatasetConfig> = {
+  carrier: {
+    datasetType: 'carrier',
+    tableName: 'fmcsa_motus_carriers',
+    sourceColumns: [
+      'docket_number', 'usdot_number', 'op_auth_type', 'op_auth_status', 'bond_req', 'bond_file',
+      'legal_name', 'dba_name', 'bus_street_po', 'bus_city', 'bus_state_code', 'bus_ctry_code',
+      'bus_zip_code', 'bus_telno', 'bus_undeliverable_mail', 'mail_street_po', 'mail_city',
+      'mail_state_code', 'mail_ctry_code', 'mail_zip_code', 'mail_undeliverable_mail',
+    ],
+    insertColumns: [
+      'docket_number', 'docket_number_canonical', 'usdot_number', 'op_auth_type', 'op_auth_status',
+      'is_broker_authority', 'bond_req', 'bond_file', 'legal_name', 'dba_name', 'bus_street_po',
+      'bus_city', 'bus_state_code', 'bus_ctry_code', 'bus_zip_code', 'bus_telno',
+      'bus_undeliverable_mail', 'mail_street_po', 'mail_city', 'mail_state_code', 'mail_ctry_code',
+      'mail_zip_code', 'mail_undeliverable_mail', ...MOTUS_COMMON_COLUMNS,
+    ],
+    conflictColumns: ['source_record_hash'],
+    dateColumns: [],
+    requiredColumns: ['docket_number', 'usdot_number', 'op_auth_type'],
+  },
+  'active-insurance': {
+    datasetType: 'active-insurance',
+    tableName: 'fmcsa_motus_active_insurance',
+    sourceColumns: [
+      'docket_number', 'usdot_number', 'ins_form_code', 'ins_type_code', 'policy_no',
+      'effective_date', 'insurance_company_name', 'trans_date',
+    ],
+    insertColumns: [
+      'docket_number', 'docket_number_canonical', 'usdot_number', 'ins_form_code', 'ins_type_code',
+      'policy_no', 'effective_date', 'insurance_company_name', 'trans_date', ...MOTUS_COMMON_COLUMNS,
+    ],
+    conflictColumns: ['source_record_hash'],
+    dateColumns: ['effective_date', 'trans_date'],
+    requiredColumns: ['docket_number', 'usdot_number'],
+  },
+  'insurance-history': {
+    datasetType: 'insurance-history',
+    tableName: 'fmcsa_motus_insurance_history',
+    sourceColumns: [
+      'docket_number', 'usdot_number', 'ins_form_code', 'filing_status_reason', 'ins_type_code',
+      'ins_type_desc', 'policy_no', 'effective_date', 'cancel_effective_date', 'insurance_company_name',
+    ],
+    sourceAliases: {
+      cancel_effective_date: ['cancl_effective_date'],
+    },
+    insertColumns: [
+      'docket_number', 'docket_number_canonical', 'usdot_number', 'ins_form_code',
+      'filing_status_reason', 'ins_type_code', 'ins_type_desc', 'policy_no', 'effective_date',
+      'cancel_effective_date', 'insurance_company_name', ...MOTUS_COMMON_COLUMNS,
+    ],
+    conflictColumns: ['source_record_hash'],
+    dateColumns: ['effective_date', 'cancel_effective_date'],
+    requiredColumns: ['docket_number', 'usdot_number'],
+  },
+  revocation: {
+    datasetType: 'revocation',
+    tableName: 'fmcsa_motus_revocations',
+    sourceColumns: [
+      'docket_number', 'usdot_number', 'op_auth_type', 'serve_date',
+      'action_type_description', 'effective_date',
+    ],
+    sourceAliases: {
+      serve_date: ['order1_serve_date'],
+      action_type_description: ['order1_type_desc'],
+      effective_date: ['order1_effective_date'],
+    },
+    insertColumns: [
+      'docket_number', 'docket_number_canonical', 'usdot_number', 'op_auth_type',
+      'is_broker_authority', 'serve_date', 'action_type_description', 'effective_date',
+      ...MOTUS_COMMON_COLUMNS,
+    ],
+    conflictColumns: ['source_record_hash'],
+    dateColumns: ['serve_date', 'effective_date'],
+    requiredColumns: ['docket_number', 'usdot_number'],
+  },
+  'authority-history': {
+    datasetType: 'authority-history',
+    tableName: 'fmcsa_motus_authority_history',
+    sourceColumns: [
+      'docket_number', 'usdot_number', 'op_auth_type', 'op_auth_status', 'reason', 'status_change_date',
+    ],
+    insertColumns: [
+      'docket_number', 'docket_number_canonical', 'usdot_number', 'op_auth_type',
+      'is_broker_authority', 'op_auth_status', 'reason', 'status_change_date', ...MOTUS_COMMON_COLUMNS,
+    ],
+    conflictColumns: ['source_record_hash'],
+    dateColumns: ['status_change_date'],
+    requiredColumns: ['docket_number', 'usdot_number'],
+  },
+};
+
 export function parseDatasetType(value: string | undefined): DatasetType {
   if (DATASET_TYPES.includes(value as DatasetType)) {
     return value as DatasetType;
@@ -514,11 +615,11 @@ export function parseDatasetType(value: string | undefined): DatasetType {
 }
 
 export function parseSourceFormat(value: string | undefined): FmcsaSourceFormat {
-  if (value === 'diff' || value === 'allHist') {
+  if (value === 'diff' || value === 'allHist' || value === 'motusDiff' || value === 'motusAllHist') {
     return value;
   }
 
-  throw new Error(`Unsupported source "${value ?? ''}". Supported source values: diff, allHist`);
+  throw new Error(`Unsupported source "${value ?? ''}". Supported source values: diff, allHist, motusDiff, motusAllHist`);
 }
 
 export function getBatchSize(value = process.env.FMCSA_IMPORT_BATCH_SIZE): number {
@@ -562,6 +663,21 @@ export function normalizeDocketNumber(value: string | undefined): string | null 
   return normalized ? normalized.toUpperCase() : null;
 }
 
+export function canonicalizeDocketNumber(value: string | undefined): string | null {
+  const normalized = normalizeNullable(value);
+  if (!normalized) {
+    return null;
+  }
+  const compact = normalized.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const match = /^(MC|FF|MX)(\d+)$/.exec(compact);
+  return match ? `${match[1]}${match[2]}` : compact || null;
+}
+
+export function normalizeUsdotText(value: string | undefined): string | null {
+  const digits = value?.replace(/\D/g, '') ?? '';
+  return digits || null;
+}
+
 export function parseFmcsaDate(value: string | undefined): string | null {
   const normalized = normalizeNullable(value);
   if (!normalized) {
@@ -591,6 +707,29 @@ export function parseFmcsaDate(value: string | undefined): string | null {
     String(month).padStart(2, '0'),
     String(day).padStart(2, '0'),
   ].join('-');
+}
+
+export function parseMotusDate(value: string | undefined): string | null {
+  const normalized = normalizeNullable(value);
+  if (!normalized) {
+    return null;
+  }
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(normalized);
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return null;
+  }
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+export function isBrokerAuthorityType(value: string | undefined | null): boolean {
+  return String(value ?? '').toUpperCase().includes('BROKER');
 }
 
 export function parseCsvLine(line: string): string[] {
@@ -698,9 +837,11 @@ export function mapDatasetRow(
   fields: string[],
   headers?: string[],
   sourceFormat: FmcsaSourceFormat = 'allHist',
+  importJobId?: number,
 ): Record<string, unknown> | null {
-  const config = DATASET_CONFIGS[datasetType];
-  const layout = sourceFormat === 'diff' ? DIFF_SOURCE_LAYOUTS[datasetType] : null;
+  const motus = isMotusSource(sourceFormat);
+  const config = getDatasetConfig(datasetType, sourceFormat);
+  const layout = isFixedLayoutSource(sourceFormat) ? DIFF_SOURCE_LAYOUTS[datasetType] : null;
   const rawColumns = headers ?? layout?.sourceColumns ?? config.sourceColumns;
   const rawRecord = rawColumns.reduce<Record<string, string | null>>((record, column, index) => {
     record[normalizeHeaderName(column)] = normalizeNullable(fields[index]);
@@ -715,13 +856,19 @@ export function mapDatasetRow(
 
     if (column === 'dot_number') {
       row[column] = normalizeDotNumber(sourceValue);
+    } else if (column === 'usdot_number') {
+      row[column] = normalizeUsdotText(sourceValue);
     } else if (column === 'docket_number') {
       row[column] = normalizeDocketNumber(sourceValue);
     } else if (config.dateColumns.includes(column)) {
-      row[column] = parseFmcsaDate(sourceValue);
+      row[column] = motus ? parseMotusDate(sourceValue) : parseFmcsaDate(sourceValue);
     } else {
       row[column] = normalizeNullable(sourceValue);
     }
+  }
+
+  if (!motus && datasetType === 'carrier' && headerIndex?.has('op_auth_type')) {
+    Object.assign(row, deriveMotusCarrierAuthorityFields(rawRecord));
   }
 
   for (const requiredColumn of config.requiredColumns) {
@@ -731,8 +878,15 @@ export function mapDatasetRow(
   }
 
   Object.assign(row, config.derive?.(row) ?? {});
+  if (motus) {
+    row.docket_number_canonical = canonicalizeDocketNumber(String(row.docket_number ?? ''));
+    if (datasetType === 'carrier' || datasetType === 'revocation' || datasetType === 'authority-history') {
+      row.is_broker_authority = isBrokerAuthorityType(String(row.op_auth_type ?? ''));
+    }
+    row.import_job_id = importJobId ?? 1;
+  }
   row.raw_record = rawRecord;
-  row.source_record_hash = createSourceRecordHash(rawRecord);
+  row.source_record_hash = createSourceRecordHash(motus ? { dataset: datasetType, row: rawRecord } : rawRecord);
   row.imported_at = new Date();
   row.updated_at = new Date();
 
@@ -759,12 +913,16 @@ export function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function buildUpsertBatch(datasetType: DatasetType, rows: Array<Record<string, unknown>>): InsertBatch {
+export function buildUpsertBatch(
+  datasetType: DatasetType,
+  rows: Array<Record<string, unknown>>,
+  sourceFormat: FmcsaSourceFormat = 'allHist',
+): InsertBatch {
   if (rows.length === 0) {
     throw new Error('Cannot build an upsert batch with zero rows.');
   }
 
-  const config = DATASET_CONFIGS[datasetType];
+  const config = getDatasetConfig(datasetType, sourceFormat);
   const values: unknown[] = [];
   const tuples = rows.map((row) => {
     const placeholders = config.insertColumns.map((column) => {
@@ -835,6 +993,10 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
     durationMs: 0,
   };
   const pendingRows: Array<Record<string, unknown>> = [];
+  const ownsImportJob = options.importJobId === undefined && isMotusSource(sourceFormat);
+  const importJobId = options.importJobId ?? (ownsImportJob
+    ? await createMotusImportJob(options.pool, options.datasetType, sourceFormat, options.inputSource)
+    : undefined);
   let headers: string[] | undefined;
   let firstRecord = true;
 
@@ -843,9 +1005,9 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
       return;
     }
 
-    const rowsToFlush = dedupeRowsByConflictKey(options.datasetType, pendingRows.splice(0));
+    const rowsToFlush = dedupeRowsByConflictKey(options.datasetType, pendingRows.splice(0), sourceFormat);
     const rowCountFallback = rowsToFlush.length;
-    const batch = buildUpsertBatch(options.datasetType, rowsToFlush);
+    const batch = buildUpsertBatch(options.datasetType, rowsToFlush, sourceFormat);
     const result = await options.pool.query(batch.text, batch.values);
     stats.rowsInsertedOrUpdated += typeof result.rowCount === 'number' ? result.rowCount : rowCountFallback;
     stats.batches += 1;
@@ -854,12 +1016,15 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
   for await (const fields of parseCsvRecords(stream)) {
     if (firstRecord) {
       firstRecord = false;
-      if (sourceFormat === 'allHist' && isHeaderRow(options.datasetType, fields)) {
+      if (isHeaderedSource(sourceFormat) && isHeaderRow(options.datasetType, fields, sourceFormat)) {
         headers = fields.map((field) => field.trim());
         continue;
       }
+      if (isMotusSource(sourceFormat)) {
+        throw new Error(`Expected a Socrata CSV header row for ${options.datasetType} ${sourceFormat}.`);
+      }
       validateColumnCount(options.datasetType, sourceFormat, fields.length);
-    } else if (sourceFormat === 'diff') {
+    } else if (!headers && isFixedLayoutSource(sourceFormat)) {
       validateColumnCount(options.datasetType, sourceFormat, fields.length);
     }
 
@@ -873,7 +1038,7 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
         continue;
       }
 
-      const row = mapDatasetRow(options.datasetType, fields, headers, sourceFormat);
+      const row = mapDatasetRow(options.datasetType, fields, headers, sourceFormat, importJobId);
       if (!row) {
         stats.rowsFailed += 1;
         continue;
@@ -894,6 +1059,9 @@ export async function importFmcsaDataset(options: ImportOptions): Promise<Import
 
   await flush();
   stats.durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  if (importJobId && ownsImportJob) {
+    await finishMotusImportJob(options.pool, importJobId, stats);
+  }
 
   return stats;
 }
@@ -932,12 +1100,15 @@ export async function previewFmcsaDataset(options: {
     if (firstRecord) {
       firstRecord = false;
       columnCount = fields.length;
-      if (options.sourceFormat === 'allHist' && isHeaderRow(options.datasetType, fields)) {
+      if (isHeaderedSource(options.sourceFormat) && isHeaderRow(options.datasetType, fields, options.sourceFormat)) {
         headers = fields.map((field) => field.trim());
         continue;
       }
+      if (isMotusSource(options.sourceFormat)) {
+        throw new Error(`Expected a Socrata CSV header row for ${options.datasetType} ${options.sourceFormat}.`);
+      }
       validateColumnCount(options.datasetType, options.sourceFormat, fields.length);
-    } else if (options.sourceFormat === 'diff') {
+    } else if (!headers && isFixedLayoutSource(options.sourceFormat)) {
       validateColumnCount(options.datasetType, options.sourceFormat, fields.length);
     }
 
@@ -985,6 +1156,43 @@ function deriveAuthorityHistoryFlags(row: Record<string, unknown>): Record<strin
   };
 }
 
+function deriveMotusCarrierAuthorityFields(rawRecord: Record<string, string | null>): Record<string, unknown> {
+  const authorityType = String(rawRecord.op_auth_type ?? '').toUpperCase();
+  const authorityStatus = normalizeMotusAuthorityStatus(rawRecord.op_auth_status);
+  const isPending = String(rawRecord.op_auth_status ?? '').toUpperCase().includes('PENDING');
+  const derived: Record<string, unknown> = {};
+
+  if (authorityType.includes('BROKER')) {
+    derived.broker_stat = authorityStatus;
+    if (isPending) {
+      derived.broker_app_pend = 'Y';
+    }
+  } else if (authorityType.includes('CONTRACT')) {
+    derived.contract_stat = authorityStatus;
+  } else if (authorityType.includes('COMMON') || authorityType.includes('MOTOR CARRIER')) {
+    derived.common_stat = authorityStatus;
+  }
+
+  return derived;
+}
+
+function normalizeMotusAuthorityStatus(value: string | null | undefined): string | null {
+  const normalized = normalizeNullable(value ?? undefined);
+  if (!normalized) {
+    return null;
+  }
+
+  const upper = normalized.toUpperCase();
+  if (upper === 'ACTIVE') {
+    return 'A';
+  }
+  if (upper === 'INACTIVE') {
+    return 'I';
+  }
+
+  return normalized;
+}
+
 function normalizeHeaderName(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1027,8 +1235,8 @@ function getSourceValue(
   return undefined;
 }
 
-function isHeaderRow(datasetType: DatasetType, fields: string[]): boolean {
-  const config = DATASET_CONFIGS[datasetType];
+function isHeaderRow(datasetType: DatasetType, fields: string[], sourceFormat: FmcsaSourceFormat): boolean {
+  const config = getDatasetConfig(datasetType, sourceFormat);
   const headerIndex = buildHeaderIndex(fields);
 
   return config.requiredColumns.every((column) =>
@@ -1041,7 +1249,7 @@ function validateColumnCount(
   sourceFormat: FmcsaSourceFormat,
   columnCount: number,
 ): void {
-  if (sourceFormat !== 'diff') {
+  if (!isFixedLayoutSource(sourceFormat)) {
     return;
   }
 
@@ -1053,6 +1261,14 @@ function validateColumnCount(
   throw new Error(
     `Unexpected ${datasetType} ${sourceFormat} column count: got ${columnCount}, expected ${expectedColumnCount}. Run with --dry-run to preview the file before importing.`,
   );
+}
+
+function isFixedLayoutSource(sourceFormat: FmcsaSourceFormat): boolean {
+  return sourceFormat === 'diff';
+}
+
+function isHeaderedSource(sourceFormat: FmcsaSourceFormat): boolean {
+  return sourceFormat === 'allHist' || sourceFormat === 'motusDiff' || sourceFormat === 'motusAllHist';
 }
 
 function stripImportMetadata(row: Record<string, unknown>): Record<string, unknown> {
@@ -1067,8 +1283,9 @@ function stripImportMetadata(row: Record<string, unknown>): Record<string, unkno
 function dedupeRowsByConflictKey(
   datasetType: DatasetType,
   rows: Array<Record<string, unknown>>,
+  sourceFormat: FmcsaSourceFormat,
 ): Array<Record<string, unknown>> {
-  const config = DATASET_CONFIGS[datasetType];
+  const config = getDatasetConfig(datasetType, sourceFormat);
   const rowsByKey = new Map<string, Record<string, unknown>>();
 
   for (const row of rows) {
@@ -1077,6 +1294,69 @@ function dedupeRowsByConflictKey(
   }
 
   return [...rowsByKey.values()];
+}
+
+function isMotusSource(sourceFormat: FmcsaSourceFormat): boolean {
+  return sourceFormat === 'motusDiff' || sourceFormat === 'motusAllHist';
+}
+
+function getDatasetConfig(datasetType: DatasetType, sourceFormat: FmcsaSourceFormat): DatasetConfig {
+  return isMotusSource(sourceFormat) ? MOTUS_DATASET_CONFIGS[datasetType] : DATASET_CONFIGS[datasetType];
+}
+
+async function createMotusImportJob(
+  pool: Pick<Pool, 'query'>,
+  datasetType: DatasetType,
+  sourceFormat: FmcsaSourceFormat,
+  inputSource: string,
+): Promise<number> {
+  const datasetKey = datasetType === 'active-insurance'
+    ? 'activeInsurance'
+    : datasetType === 'insurance-history'
+      ? 'insuranceHistory'
+      : datasetType === 'authority-history'
+        ? 'authorityHistory'
+        : datasetType;
+  const sourceKind = sourceFormat === 'motusDiff' ? 'daily_diff' : 'all_history';
+  const source = sourceFormat === 'motusDiff' ? MOTUS_DATASETS.diff : MOTUS_DATASETS.allHist;
+  const dataset = source[datasetKey as keyof typeof source];
+  const result = await pool.query(
+    `INSERT INTO fmcsa_import_jobs
+      (provider, dataset_name, dataset_id, source_kind, source_url, source_filename, status)
+     VALUES ('motus', $1, $2, $3, $4, $5, 'started')
+     RETURNING id`,
+    [
+      datasetType,
+      dataset.datasetId,
+      sourceKind,
+      inputSource,
+      inputSource.split('/').pop() ?? inputSource,
+    ],
+  );
+  const id = Number(result.rows?.[0]?.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error('Failed to create fmcsa_import_jobs row.');
+  }
+  return id;
+}
+
+async function finishMotusImportJob(
+  pool: Pick<Pool, 'query'>,
+  importJobId: number,
+  stats: ImportStats,
+): Promise<void> {
+  await pool.query(
+    `UPDATE fmcsa_import_jobs
+     SET status = 'succeeded',
+         finished_at = now(),
+         rows_read = $2,
+         rows_inserted = $3,
+         rows_updated = 0,
+         rows_deleted = 0,
+         rows_failed = $4
+     WHERE id = $1`,
+    [importJobId, stats.rowsRead, stats.rowsInsertedOrUpdated, stats.rowsFailed],
+  );
 }
 
 function parseS3Url(inputSource: string): { bucket: string; key: string } {

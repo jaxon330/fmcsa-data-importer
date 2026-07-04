@@ -15,14 +15,16 @@ These are deployment notes only. Do not create AWS resources from this repositor
 3. Build the Docker image.
 4. Push the image to ECR.
    - Repository URI: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev`
-   - Current amd64 image tag: `amd64-a9e484c-20260614105333`
-   - Previous amd64 image tags: `amd64-90d1bc6`, `latest-amd64`
+   - Current staged Motus amd64 image tag: `motus-diff-20260615124523`
+   - Previous amd64 image tags: `amd64-a9e484c-20260614105333`, `amd64-90d1bc6`, `latest-amd64`
 5. Create an ECS task definition for the `fmcsa-data-importer` container.
    - Task definition is created.
    - Family: `fmcsa-importer-dev`
-   - Current ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:5`
+   - Current scheduled ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:5`
+   - Current staged Motus ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:6`
    - Container name: `fmcsa-data-importer`
-   - Image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:amd64-a9e484c-20260614105333`
+   - Scheduled image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:amd64-a9e484c-20260614105333`
+   - Staged Motus image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:motus-diff-20260615124523`
    - Execution role: `arn:aws:iam::010257029704:role/fmcsa-importer-ecs-execution-dev`
    - Task role: `arn:aws:iam::010257029704:role/fmcsa-importer-ecs-task-dev`
    - Log group: `/ecs/fmcsa-importer-dev`
@@ -32,6 +34,13 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - Revision 4 adds production-safe retry handling for transient FMCSA/Socrata download failures.
    - Revision 5 treats HTTP 404 for daily diff downloads as "not published yet" and skips without failing the job.
    - Revision 5 captures file identity metadata and supports duplicate daily diff protection using dataset, source, ETag, Last-Modified, Content-Length, and SHA-256.
+   - Revision 6 stages the Motus daily-diff adapter. Motus daily-diff resources use Socrata `rows.csv?accessType=DOWNLOAD`; Motus all-history resources remain file-backed text assets.
+   - Revision 6 was registered but is not wired to the scheduler.
+   - AWS/dev migration `002_create_fmcsa_raw_imports.sql` is blocked with `permission denied for schema public` when using the current `fmcsa-importer-dev/database-url` secret. A DB owner/admin migration credential is required before live Motus sync.
+   - Manual Motus carrier dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/599c689a8921476f985e51f982cf50f7`
+   - Manual Motus carrier dry-run command: `npm run sync:fmcsa -- --provider motus --source diff --dry-run --datasets carrier`
+   - Manual Motus carrier dry-run result: passed with exit code 0 on revision 6. Logs showed `storage: s3`, wrote `s3://fmcsa-importer-dataset-dev/fmcsa/dataset/motusDiff/motus_carrier_2026_06_15.csv`, validated size `29362`, previewed 3 rows, and imported 0 rows.
+   - Motus daily diff and the corrected Motus all-history datasets use Socrata `rows.csv`, preserve headers, and save as `.csv`. The Motus-native implementation remains local only; AWS and scheduler configuration were not changed.
    - Manual dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/4f9db872e5c343e6bcdbfff6ba8d667b`
    - Manual dry-run command: `npm run sync:fmcsa -- --dry-run --source diff --datasets carrier`
    - Manual dry-run result: passed with exit code 0. FMCSA returned HTTP 404 for the carrier daily diff, and the importer skipped it as not published yet.
@@ -41,8 +50,8 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - `AWS_PROFILE=fmcsa-importer`
    - `AWS_REGION=us-east-2`
    - `FMCSA_STORAGE_TYPE=s3`
-   - `FMCSA_S3_BUCKET_NAME=fmcsa-importer-dataset-dev`
-   - `FMCSA_S3_PREFIX=fmcsa/dataset`
+   - `FMCSA_RAW_S3_BUCKET=fmcsa-importer-dataset-dev`
+   - `FMCSA_RAW_S3_PREFIX=fmcsa/dataset`
    - `LOG_LEVEL=INFO`
 7. Attach an IAM role with:
    - IAM roles are created.
@@ -60,7 +69,7 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - Scheduler role: `arn:aws:iam::010257029704:role/fmcsa-importer-scheduler-dev`
    - Network: `subnet-0fb837392966b8f56`, `subnet-06771f8d9ba66631f`, `sg-05ff742d7518b9226`, public IP enabled.
    - Command: `npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insurance-history`
-   - Last verified: schedule state `ENABLED`, target revision `5`, command unchanged. `get-schedule` did not return a next invocation timestamp.
+   - Last verified: schedule state `ENABLED`, target revision `5`, command unchanged. The scheduler was not modified during revision 6 staging.
 9. Send ECS task logs to CloudWatch.
 10. Optionally create a retry schedule at 9:00 AM America/Chicago using the same command.
 
@@ -70,8 +79,8 @@ These are deployment notes only. Do not create AWS resources from this repositor
 - Daily diff files are requested from the configured current FMCSA URL. The importer does not try previous-date URL fallback.
 - HTTP 404 for a daily diff file means FMCSA has not published the current file yet. The dataset is skipped, the same 404 is not retried, and the job can complete successfully if all requested datasets are only missing due to 404.
 - All-history sync should be manual or monthly, not daily.
-- Raw S3 keys use `{FMCSA_S3_PREFIX}/{source}/{filename}`. Date folders are not used because the FMCSA date is already in each filename.
+- Raw S3 keys use `{FMCSA_RAW_S3_PREFIX}/{source}/{filename}`. Date folders are not used because the FMCSA date is already in each filename.
 - Downloads retry transient failures such as HTTP 429, 500, 502, 503, 504, timeouts, and connection resets with bounded exponential backoff.
-- Duplicate daily diff protection records processed file identity markers under `{FMCSA_S3_PREFIX}/{source}/_processed/{datasetKey}/`. Identity is based on dataset, source, ETag, Last-Modified, Content-Length, and SHA-256 when available.
+- Duplicate daily diff protection records processed file identity markers under `{FMCSA_RAW_S3_PREFIX}/{source}/_processed/{datasetKey}/`. Identity is based on dataset, source, ETag, Last-Modified, Content-Length, and SHA-256 when available.
 - Real secret values are stored in AWS Secrets Manager and must never be committed to the repository.
 - Update this document after every successful AWS implementation step so deployment state stays aligned with real infrastructure.

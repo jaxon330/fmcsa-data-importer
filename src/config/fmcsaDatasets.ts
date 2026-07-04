@@ -1,8 +1,11 @@
 export type FmcsaDownloadMode = 'diff' | 'allHist';
+export type FmcsaProvider = 'legacy' | 'motus';
+export type FmcsaRawSource = FmcsaDownloadMode | 'motusDiff' | 'motusAllHist';
 
 export type FmcsaDatasetKey =
   | 'carrier'
   | 'activeInsurance'
+  | 'insurance'
   | 'insuranceHistory'
   | 'revocation'
   | 'authorityHistory';
@@ -10,6 +13,7 @@ export type FmcsaDatasetKey =
 export type FmcsaDatasetName =
   | 'carrier'
   | 'active-insurance'
+  | 'insurance'
   | 'insurance-history'
   | 'revocation'
   | 'authority-history';
@@ -33,6 +37,7 @@ export const BROKER_CHECK_V1_DATASETS: FmcsaDatasetName[] = [
 export const DATASET_KEY_TO_NAME: Record<FmcsaDatasetKey, FmcsaDatasetName> = {
   carrier: 'carrier',
   activeInsurance: 'active-insurance',
+  insurance: 'insurance',
   insuranceHistory: 'insurance-history',
   revocation: 'revocation',
   authorityHistory: 'authority-history',
@@ -41,6 +46,7 @@ export const DATASET_KEY_TO_NAME: Record<FmcsaDatasetKey, FmcsaDatasetName> = {
 export const DATASET_NAME_TO_KEY: Record<FmcsaDatasetName, FmcsaDatasetKey> = {
   carrier: 'carrier',
   'active-insurance': 'activeInsurance',
+  insurance: 'insurance',
   'insurance-history': 'insuranceHistory',
   revocation: 'revocation',
   'authority-history': 'authorityHistory',
@@ -50,6 +56,7 @@ export const DATASET_KEY_ALIASES: Record<string, FmcsaDatasetKey> = {
   carrier: 'carrier',
   activeInsurance: 'activeInsurance',
   'active-insurance': 'activeInsurance',
+  insurance: 'insurance',
   insuranceHistory: 'insuranceHistory',
   'insurance-history': 'insuranceHistory',
   revocation: 'revocation',
@@ -114,8 +121,68 @@ export const FMCSA_DATASETS = {
   },
 } as const satisfies Record<
   FmcsaDownloadMode,
-  Record<FmcsaDatasetKey, FmcsaDatasetDownloadConfig>
+  Record<Exclude<FmcsaDatasetKey, 'insurance'>, FmcsaDatasetDownloadConfig>
 >;
+
+export const MOTUS_DATASETS = {
+  diff: {
+    carrier: {
+      datasetId: 'nakq-58th',
+      filePrefix: 'motus_carrier',
+      extension: 'csv',
+    },
+    activeInsurance: {
+      datasetId: 'x96h-evps',
+      filePrefix: 'motus_actpendins',
+      extension: 'csv',
+    },
+    insuranceHistory: {
+      datasetId: 'xe5s-wca7',
+      filePrefix: 'motus_inshist',
+      extension: 'csv',
+    },
+    revocation: {
+      datasetId: 'e67p-xyd5',
+      filePrefix: 'motus_revocation',
+      extension: 'csv',
+    },
+    authorityHistory: {
+      datasetId: 'dm5j-zc6c',
+      filePrefix: 'motus_authhist',
+      extension: 'csv',
+    },
+  },
+  allHist: {
+    carrier: {
+      datasetId: 'inys-ebih',
+      filePrefix: 'motus_carrier_all_with_history',
+      extension: 'csv',
+    },
+    activeInsurance: {
+      datasetId: 'c5y8-a4uz',
+      filePrefix: 'motus_active_pending_insurance_all_with_history',
+      extension: 'csv',
+    },
+    insuranceHistory: {
+      datasetId: '3uet-3z4i',
+      filePrefix: 'motus_insurance_history_all_with_history',
+      extension: 'csv',
+    },
+    revocation: {
+      datasetId: 'wb4f-neki',
+      filePrefix: 'motus_revocation_all_with_history',
+      extension: 'csv',
+    },
+    authorityHistory: {
+      datasetId: 'yu5v-wbh6',
+      filePrefix: 'motus_authority_history_all_with_history',
+      extension: 'csv',
+    },
+  },
+} as const satisfies {
+  diff: Record<Exclude<FmcsaDatasetKey, 'insurance'>, FmcsaDatasetDownloadConfig>;
+  allHist: Record<Exclude<FmcsaDatasetKey, 'insurance'>, FmcsaDatasetDownloadConfig>;
+};
 
 export function buildFmcsaDownloadUrl(datasetId: string): string {
   return `${FMCSA_ASSET_DOWNLOAD_URL}/${datasetId}/application/octet-stream`;
@@ -151,7 +218,7 @@ export function datasetKeyToName(datasetKey: FmcsaDatasetKey): FmcsaDatasetName 
 }
 
 export function supportedDatasetNames(): FmcsaDatasetName[] {
-  return ['carrier', 'active-insurance', 'insurance-history', 'revocation', 'authority-history'];
+  return ['carrier', 'active-insurance', 'insurance', 'insurance-history', 'revocation', 'authority-history'];
 }
 
 export function buildFmcsaSodaExportUrl(datasetId: string): string {
@@ -159,4 +226,23 @@ export function buildFmcsaSodaExportUrl(datasetId: string): string {
   url.searchParams.set('accessType', 'DOWNLOAD');
 
   return url.toString();
+}
+
+export function buildMotusTextDownloadUrl(datasetId: string): string {
+  return `https://data.transportation.gov/download/${datasetId}/text/plain`;
+}
+
+export function buildMotusRowsCsvDownloadUrl(datasetId: string): string {
+  const url = new URL(`${FMCSA_BASE_DOWNLOAD_URL}/${datasetId}/rows.csv`);
+  url.searchParams.set('accessType', 'DOWNLOAD');
+
+  return url.toString();
+}
+
+export function toRawSource(provider: FmcsaProvider, downloadMode: FmcsaDownloadMode): FmcsaRawSource {
+  if (provider === 'legacy') {
+    return downloadMode;
+  }
+
+  return downloadMode === 'diff' ? 'motusDiff' : 'motusAllHist';
 }

@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import type { FmcsaDatasetKey, FmcsaDownloadMode } from '../config/fmcsaDatasets';
+import type { FmcsaDatasetKey, FmcsaRawSource } from '../config/fmcsaDatasets';
 
 export type FmcsaStorageType = 'local' | 's3';
 
@@ -14,7 +14,7 @@ export interface FmcsaRawStorageConfig {
 }
 
 export interface FmcsaRawFileRef {
-  source: FmcsaDownloadMode;
+  source: FmcsaRawSource;
   filename: string;
   localPath?: string;
   s3Key?: string;
@@ -35,7 +35,7 @@ export interface FmcsaDownloadFileIdentity {
 }
 
 export interface FmcsaProcessedFileIdentityRef {
-  source: FmcsaDownloadMode;
+  source: FmcsaRawSource;
   datasetKey: FmcsaDatasetKey;
   identityKey: string;
   localPath?: string;
@@ -45,7 +45,7 @@ export interface FmcsaProcessedFileIdentityRef {
 
 const DEFAULT_STORAGE_TYPE = 'local';
 const DEFAULT_RAW_DATA_DIR = './data/raw';
-const DEFAULT_S3_PREFIX = 'fmcsa/raw';
+const DEFAULT_S3_PREFIX = 'fmcsa/dataset';
 
 export function getFmcsaRawStorageConfig(dirOverride?: string): FmcsaRawStorageConfig {
   const storageType = process.env.FMCSA_STORAGE_TYPE ?? DEFAULT_STORAGE_TYPE;
@@ -54,11 +54,11 @@ export function getFmcsaRawStorageConfig(dirOverride?: string): FmcsaRawStorageC
   }
 
   const localRawDataDir = dirOverride ?? process.env.FMCSA_LOCAL_RAW_DATA_DIR ?? DEFAULT_RAW_DATA_DIR;
-  const s3Prefix = trimSlashes(process.env.FMCSA_S3_PREFIX ?? DEFAULT_S3_PREFIX);
-  const s3BucketName = process.env.FMCSA_S3_BUCKET_NAME;
+  const s3Prefix = trimSlashes(process.env.FMCSA_RAW_S3_PREFIX ?? process.env.FMCSA_S3_PREFIX ?? DEFAULT_S3_PREFIX);
+  const s3BucketName = process.env.FMCSA_RAW_S3_BUCKET ?? process.env.FMCSA_S3_BUCKET_NAME;
 
   if (storageType === 's3' && !s3BucketName) {
-    throw new Error('FMCSA_S3_BUCKET_NAME is required when FMCSA_STORAGE_TYPE=s3.');
+    throw new Error('FMCSA_RAW_S3_BUCKET or FMCSA_S3_BUCKET_NAME is required when FMCSA_STORAGE_TYPE=s3.');
   }
 
   return {
@@ -71,7 +71,7 @@ export function getFmcsaRawStorageConfig(dirOverride?: string): FmcsaRawStorageC
 
 export function buildFmcsaRawFileRef(
   storage: FmcsaRawStorageConfig,
-  source: FmcsaDownloadMode,
+  source: FmcsaRawSource,
   filename: string,
 ): FmcsaRawFileRef {
   if (storage.storageType === 's3') {
@@ -98,7 +98,7 @@ export function buildFmcsaRawFileRef(
 
 export function buildProcessedFileIdentityRef(
   storage: FmcsaRawStorageConfig,
-  source: FmcsaDownloadMode,
+  source: FmcsaRawSource,
   datasetKey: FmcsaDatasetKey,
   identity: FmcsaDownloadFileIdentity,
 ): FmcsaProcessedFileIdentityRef {
@@ -126,7 +126,7 @@ export function buildProcessedFileIdentityRef(
   };
 }
 
-export function getFmcsaRawDir(storage: FmcsaRawStorageConfig, source: FmcsaDownloadMode): string {
+export function getFmcsaRawDir(storage: FmcsaRawStorageConfig, source: FmcsaRawSource): string {
   const rawDataDir = path.resolve(process.cwd(), storage.localRawDataDir);
   return path.basename(rawDataDir) === source ? rawDataDir : path.join(rawDataDir, source);
 }
@@ -158,7 +158,7 @@ export async function processedFileIdentityExists(
   }
 
   if (!storage.s3BucketName) {
-    throw new Error('FMCSA_S3_BUCKET_NAME is required for S3 processed file identity checks.');
+    throw new Error('FMCSA_RAW_S3_BUCKET or FMCSA_S3_BUCKET_NAME is required for S3 processed file identity checks.');
   }
 
   try {
@@ -245,7 +245,7 @@ export async function markProcessedFileIdentity(
   }
 
   if (!storage.s3BucketName) {
-    throw new Error('FMCSA_S3_BUCKET_NAME is required for S3 processed file identity markers.');
+    throw new Error('FMCSA_RAW_S3_BUCKET or FMCSA_S3_BUCKET_NAME is required for S3 processed file identity markers.');
   }
 
   await s3Client.send(
@@ -282,7 +282,7 @@ function parseBucketFromS3Url(inputSource: string): string {
 }
 
 function createProcessedFileIdentityKey(
-  source: FmcsaDownloadMode,
+  source: FmcsaRawSource,
   datasetKey: FmcsaDatasetKey,
   identity: FmcsaDownloadFileIdentity,
 ): string {
