@@ -93,8 +93,21 @@ npm run cleanup:motus -- --execute
   continuous seven-day retention.
 
 Before enabling deletion, run the command without `--execute`, review the CloudWatch inventory,
-and verify the candidate count and key prefix. No cleanup schedule has been deployed from these
-repository changes.
+and verify the candidate count and key prefix.
+
+Deployed cleanup schedule:
+
+- Schedule: `fmcsa-importer-motus-cleanup-dev`
+- ARN: `arn:aws:scheduler:us-east-2:010257029704:schedule/default/fmcsa-importer-motus-cleanup-dev`
+- State: `ENABLED`
+- Schedule: 7:00 AM America/Chicago daily.
+- Task definition: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:12`
+- Image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:motus-cleanup-20261010144515`
+- Command: `npm run cleanup:motus -- --retention-days 7 --execute`
+- Pre-deployment dry-run task: `arn:aws:ecs:us-east-2:010257029704:task/fmcsa-importer-dev/0f60b64556d04309ad07be84315fa194`
+- Dry-run result: exit code 0; 676 objects scanned, 308 deletion candidates, 30 retained raw
+  files, and 338 protected `_processed` markers.
+- The existing 6:00 AM daily Motus sync remains pinned to task-definition revision 11.
 
 Live AWS CLI inventory on 2026-10-10 after the daily sync:
 
