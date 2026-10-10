@@ -296,11 +296,36 @@ Dry run:
 npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insurance-history --dry-run
 ```
 
+### Motus S3 cleanup
+
+Inventory Motus daily-diff objects older than seven days without deleting anything:
+
+```bash
+npm run cleanup:motus
+```
+
+Delete the reported candidates:
+
+```bash
+npm run cleanup:motus -- --execute
+```
+
+The command operates only on `{FMCSA_RAW_S3_PREFIX}/motusDiff/`, protects everything below
+`_processed/`, and uses each S3 object's `LastModified` timestamp. The retention period can be
+changed with `--retention-days <days>`. Use `--verbose` to print every candidate; otherwise the
+first 20 are logged. Dry-run is the default so an omitted `--execute` cannot delete objects.
+
+The ECS task role needs `s3:ListBucket` on the bucket and `s3:DeleteObject` on the
+`fmcsa/dataset/motusDiff/*` object ARN. A monthly schedule leaves only the newest seven days after
+each run, but between runs an object can reach roughly 37 days old. Run the command daily if S3
+must continuously contain no more than seven days of raw Motus files.
+
 Suggested schedule:
 
 - Daily diff: 6:00 AM America/Chicago.
 - Retry: 9:00 AM America/Chicago.
 - All-history: manual or monthly, not daily.
+- Motus raw-file cleanup: monthly as requested, or daily for strict seven-day retention.
 
 Production AWS recommendation:
 

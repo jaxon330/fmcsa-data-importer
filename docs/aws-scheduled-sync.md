@@ -20,10 +20,10 @@ These are deployment notes only. Do not create AWS resources from this repositor
 5. Create an ECS task definition for the `fmcsa-data-importer` container.
    - Task definition is created.
    - Family: `fmcsa-importer-dev`
-   - Current scheduled ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:5`
+   - Current scheduled ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:11`
    - Current staged Motus ARN/revision: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:6`
    - Container name: `fmcsa-data-importer`
-   - Scheduled image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:amd64-a9e484c-20260614105333`
+   - Scheduled image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:motus-diff-20260703231700`
    - Staged Motus image: `010257029704.dkr.ecr.us-east-2.amazonaws.com/fmcsa-importer-dev:motus-diff-20260615124523`
    - Execution role: `arn:aws:iam::010257029704:role/fmcsa-importer-ecs-execution-dev`
    - Task role: `arn:aws:iam::010257029704:role/fmcsa-importer-ecs-task-dev`
@@ -65,13 +65,48 @@ These are deployment notes only. Do not create AWS resources from this repositor
    - State: `ENABLED`
    - Schedule: 6:00 AM America/Chicago daily.
    - Target cluster: `arn:aws:ecs:us-east-2:010257029704:cluster/fmcsa-importer-dev`
-   - Target task definition: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:5`
+   - Target task definition: `arn:aws:ecs:us-east-2:010257029704:task-definition/fmcsa-importer-dev:11`
    - Scheduler role: `arn:aws:iam::010257029704:role/fmcsa-importer-scheduler-dev`
    - Network: `subnet-0fb837392966b8f56`, `subnet-06771f8d9ba66631f`, `sg-05ff742d7518b9226`, public IP enabled.
-   - Command: `npm run sync:fmcsa -- --source diff --datasets carrier,active-insurance,insurance-history`
-   - Last verified: schedule state `ENABLED`, target revision `5`, command unchanged. The scheduler was not modified during revision 6 staging.
+   - Command: `npm run sync:fmcsa -- --provider motus --source diff --datasets carrier,active-insurance,insurance-history,revocation,authority-history`
+   - Last verified: 2026-10-10. Schedule state `ENABLED`, target revision `11`, and all five Motus daily-diff datasets are enabled.
 9. Send ECS task logs to CloudWatch.
 10. Optionally create a retry schedule at 9:00 AM America/Chicago using the same command.
+
+## Motus Raw-File Cleanup
+
+The repository includes a guarded S3 cleanup command:
+
+```bash
+npm run cleanup:motus
+npm run cleanup:motus -- --execute
+```
+
+- Default retention: 7 days, based on S3 `LastModified`.
+- Default mode: dry-run. Scheduled execution must explicitly include `--execute`.
+- Scope: `s3://fmcsa-importer-dataset-dev/fmcsa/dataset/motusDiff/` only.
+- Processed identity markers under `motusDiff/_processed/` are always preserved.
+- Required task-role actions: `s3:ListBucket` and `s3:DeleteObject` for the scoped prefix.
+- Suggested monthly command: `npm run cleanup:motus -- --retention-days 7 --execute`.
+- With a monthly schedule, files can remain for up to roughly 37 days between runs even though
+  only the latest seven days remain immediately after each run. Schedule daily for strict
+  continuous seven-day retention.
+
+Before enabling deletion, run the command without `--execute`, review the CloudWatch inventory,
+and verify the candidate count and key prefix. No cleanup schedule has been deployed from these
+repository changes.
+
+Live AWS CLI inventory on 2026-10-10 after the daily sync:
+
+- 676 total objects and 19.2 MiB under `fmcsa/dataset/motusDiff/`.
+- 338 raw CSV files: 68 each for carrier, active insurance, and revocation; 67 each for authority
+  history and insurance history.
+- 338 `_processed` identity markers, all protected from cleanup.
+- A seven-day cutoff selected 308 raw files (16.5 MiB) and retained 30 raw files.
+- No raw files were present for 2026-10-08 at inspection time.
+- The existing task-role policy already grants `s3:ListBucket` and `s3:DeleteObject`; no IAM
+  policy change is required for this command.
+- The inventory was read-only. No S3 objects were deleted.
 
 ## Notes
 
