@@ -320,6 +320,14 @@ The ECS task role needs `s3:ListBucket` on the bucket and `s3:DeleteObject` on t
 each run, but between runs an object can reach roughly 37 days old. Run the command daily if S3
 must continuously contain no more than seven days of raw Motus files.
 
+Deployed development schedule:
+
+- Schedule name: `fmcsa-importer-motus-cleanup-dev`
+- Runs daily at 7:00 AM America/Chicago, one hour after the Motus download job.
+- Uses ECS task definition `fmcsa-importer-dev:12`.
+- Command: `npm run cleanup:motus -- --retention-days 7 --execute`.
+- The existing 6:00 AM Motus download remains on task-definition revision 11.
+
 Suggested schedule:
 
 - Daily diff: 6:00 AM America/Chicago.
